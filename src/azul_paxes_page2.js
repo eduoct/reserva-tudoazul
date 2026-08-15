@@ -2,9 +2,14 @@
  * TudoAzul / Azul Viagens — hotéis — passageiros + ida para a tela de cupom
  *
  * USO PRINCIPAL — cole no console da TELA DE RESULTADOS, logado:
- *   1. o painel lê o results.ashx da sessão — de lá saem as tarifas (com
- *      pontos/preço), a data de check-in e o `distribution` da busca, que
- *      diz quantos adultos/crianças/bebês preencher;
+ *   1. o painel lê a memória do próprio site ($jbe.results.cache.items) — de
+ *      lá saem as tarifas (com pontos/preço), a data de check-in e o
+ *      `distribution` da busca, que diz quantos adultos/crianças/bebês
+ *      preencher. Sem essa memória, UMA chamada ao results.ashx;
+ *      🔴 NUNCA varrer páginas nem pedir hotel por hotel de uma vez: a
+ *      proteção do site (Akamai) responde cortando o stream HTTP/2 e derruba
+ *      todas as chamadas seguintes da sessão. Tarifas extras de um hotel só
+ *      quando a pessoa clica, uma requisição por clique;
  *   2. você escolhe o hotel + a tarifa num dropdown agrupado por hotel;
  *   3. informa os CPFs — ele consulta o cadastro e preenche o que voltar;
  *   4. "Reservar" dispara os dois POSTs em sequência: POST 1 (UID +
@@ -25,7 +30,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.4.1';
+  var VERSION = '1.5.0';
   var KOFI = 'https://ko-fi.com/eduoct';
 
   // Só monta a UI no site certo. Fora daqui, sai sem tocar na página.
@@ -472,116 +477,166 @@
     });
   }
 
-  async function pedirPagina(sid, page) {
-    var qs = '?searchSessionID=' + encodeURIComponent(sid) + (page > 1 ? '&page=' + page : '');
-    var urls = ['/hotels/ashx/results.ashx' + qs, '/hotels/handlers/results.ashx' + qs];
-    for (var i = 0; i < urls.length; i++) {
-      try {
-        var r = await fetch(urls[i], {
-          credentials: 'same-origin',
-          headers: { 'x-requested-with': 'XMLHttpRequest' }
-        });
-        if (!r.ok) continue;
-        var t = await r.text();
-        if (t.trim().charAt(0) === '{') return JSON.parse(t);
-      } catch (e) { /* tenta o próximo */ }
-    }
-    return null;
+  // 🔴 A PROTEÇÃO DO SITE (Akamai) CORTA A CONEXÃO — não responde 403, ela
+  // mata o stream HTTP/2 (ERR_HTTP2_PROTOCOL_ERROR no console). Foi o que
+  // aconteceu na v1.4.x: eu varria todas as páginas do results.ashx e depois
+  // disparava um POST por hotel, ~30 requisições em 6 s. Nenhum humano faz
+  // isso, e depois do estouro TODA chamada da sessão passa a ser cortada.
+  //
+  // Então, na ordem:
+  //   1. ler a memória do PRÓPRIO site ($jbe.results.cache.items) — 0 requisições
+  //   2. se não houver, UMA chamada ao results.ashx, com os mesmos parâmetros
+  //      que o site manda, pelo mesmo jQuery que ele usa
+  //   3. tarifas extras de um hotel: só quando VOCÊ escolhe o hotel, 1 POST
+  //
+  // Qualquer falha de rede acende `state.bloqueado` e o painel para de pedir.
+  function siteResults() {
+    var r = window.$jbe && window.$jbe.results;
+    return (r && r.options && r.options.searchInfo) ? r : null;
   }
 
-  // O results.ashx é PAGINADO (summary.page / resultPerPage / totalResults).
-  // Pegar só a primeira página deixava o dropdown incompleto quando a busca
-  // tinha mais hotéis do que cabe numa página — que é o caso de "carregar
-  // mais" na tela. Aqui varremos todas as páginas de uma vez, na abertura.
-  async function loadCatalog() {
-    var sid = qsParam('searchSessionID') ||
-              (/searchSessionID=(\d+)/.exec(window.location.hash) || [])[1];
-    if (!sid) return null;
+  function sidDaPagina() {
+    var r = siteResults();
+    if (r && r.options.searchInfo.searchSessionID) return String(r.options.searchInfo.searchSessionID);
+    return qsParam('searchSessionID') ||
+           (/searchSessionID=(\d+)/.exec(window.location.hash) || [])[1] || '';
+  }
 
-    var json = await pedirPagina(sid, 1);
-    if (!json || !json.results) return null;
+  // já tem todas as tarifas deste hotel? o próprio site sabe: `hasAllOptions`
+  // na config, `hasUpdatedOptions` no item (o "+" já foi clicado) ou
+  // `moreOptions: false` na disponibilidade (não existe mais nada).
+  function hotelJaCompleto(uid) {
+    var r = siteResults();
+    if (!r) return false;
+    if (r.options.config && r.options.config.hasAllOptions) return true;
+    var it = r.cache && r.cache.items && r.cache.items[uid];
+    if (!it) return false;
+    if (it.hasUpdatedOptions) return true;
+    return !!(it.availability && it.availability.moreOptions === false);
+  }
 
-    var sum = json.summary || {};
-    var perPage = parseInt(sum.resultPerPage, 10) || json.results.length || 12;
-    var total = parseInt(sum.totalResults, 10) || json.results.length;
-    var paginas = Math.max(1, Math.min(Math.ceil(total / perPage), 25));   // teto de segurança
-    var brutos = json.results.slice();
-
-    for (var pg = 2; pg <= paginas; pg++) {
-      await sleep(250);                     // sem martelar o handler
-      var jn = await pedirPagina(sid, pg);
-      if (!jn || !jn.results || !jn.results.length) break;
-      brutos = brutos.concat(jn.results);
+  // parâmetros extra que o site sempre manda junto (filtros e extraParams)
+  function paramsDoSite() {
+    var r = siteResults();
+    var p = { searchSessionID: sidDaPagina() };
+    if (window.$jbe && window.$jbe.currency) p.currency = window.$jbe.currency;
+    if (r) {
+      $.extend(p, r.filters || {}, (r.options.searchInfo.extraParams) || {});
     }
-    state.paginas = paginas;
-    state.hoteisTotal = total;
+    return p;
+  }
 
+  // (1) a memória do site: cache.items é um mapa UID -> { hotel, availability },
+  // preenchido conforme a lista é renderizada. Custo zero.
+  function catalogoDoCacheDoSite() {
+    var r = siteResults();
+    var itens = r && r.cache && r.cache.items;
+    if (!itens) return null;
     var cat = [];
-    brutos.forEach(function (res) { cat = cat.concat(catalogoDoResultado(res)); });
+    Object.keys(itens).forEach(function (uid) {
+      var it = itens[uid];
+      if (it && it.availability) cat = cat.concat(catalogoDoResultado(it));
+    });
     return cat.length ? cat : null;
   }
 
-  // O results.ashx só devolve as primeiras opções de cada hotel. O botão "+"
-  // da tela chama options.ashx com o optionID da primeira opção e recebe a
-  // lista completa daquele hotel:
-  //   $.post(handlers.moreOptions, { optionID: options[0].ID, searchSessionID })
-  //     .done(s => cache.items[uid].availability = s.results[0].availability)
-  async function opcoesDoHotel(sid, primeiroOptionID) {
-    var body = 'optionID=' + encodeURIComponent(primeiroOptionID) +
-               '&searchSessionID=' + encodeURIComponent(sid);
-    var urls = ['/hotels/ashx/options.ashx', '/hotels/handlers/options.ashx'];
-    for (var i = 0; i < urls.length; i++) {
-      try {
-        var r = await fetch(urls[i], {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'content-type': 'application/x-www-form-urlencoded',
-                     'x-requested-with': 'XMLHttpRequest' },
-          body: body
+  // (2) UMA página do results.ashx, no formato exato do site:
+  //     $.getJSON(handlers.results, { searchSessionID, currency, ...filtros })
+  function pedirResults() {
+    var sid = sidDaPagina();
+    if (!sid) return Promise.resolve(null);
+    return new Promise(function (resolve) {
+      $.getJSON('/hotels/ashx/results.ashx', paramsDoSite())
+        .done(function (j) { resolve(j && j.results ? j : null); })
+        .fail(function (xhr) {
+          // status 0 = stream cortado antes da resposta (a proteção agindo)
+          if (!xhr || !xhr.status) marcarBloqueio('results.ashx');
+          resolve(null);
         });
-        if (!r.ok) continue;
-        var t = await r.text();
-        if (t.trim().charAt(0) !== '{') continue;
-        var j = JSON.parse(t);
-        var res = j.results && j.results[0];
-        if (res && res.availability) return res;
-      } catch (e) { /* tenta o próximo */ }
-    }
-    return null;
+    });
   }
 
-  // completa o catálogo hotel a hotel, e vai redesenhando conforme chega
-  async function completarTarifas(sid) {
-    if (!state.catalog) return;
-    var porHotel = {}, ordem = [];
-    state.catalog.forEach(function (c) {
-      if (!porHotel[c.uid]) { porHotel[c.uid] = c; ordem.push(c.uid); }
-    });
-
-    state.completando = { feitos: 0, total: ordem.length };
+  function marcarBloqueio(onde) {
+    if (state.bloqueado) return;
+    state.bloqueado = onde;
+    log('⛔ A proteção do site cortou a conexão em ' + onde + ' ' +
+        '(no console aparece ERR_HTTP2_PROTOCOL_ERROR).\n' +
+        'Não vou insistir — insistir só piora. Recarregue a página (F5) para o ' +
+        'site revalidar a sessão; o painel segue funcionando com as tarifas que ' +
+        'já estão na tela.');
     render();
+  }
 
-    for (var i = 0; i < ordem.length; i++) {
-      var base = porHotel[ordem[i]];
-      var res = await opcoesDoHotel(sid, base.optionID);
-      if (res) {
-        var novos = catalogoDoResultado(res).filter(function (n) {
-          return !state.catalog.some(function (c) { return c.optionID === n.optionID; });
+  async function loadCatalog() {
+    var doCache = catalogoDoCacheDoSite();
+    if (doCache) { state.catalogFonte = 'memória do site'; return doCache; }
+
+    var json = await pedirResults();
+    if (!json) return null;
+    state.catalogFonte = 'results.ashx';
+    var sum = json.summary || {};
+    state.hoteisTotal = parseInt(sum.totalResults, 10) || json.results.length;
+    var cat = [];
+    json.results.forEach(function (res) { cat = cat.concat(catalogoDoResultado(res)); });
+    return cat.length ? cat : null;
+  }
+
+  // (3) O results.ashx devolve só as primeiras opções de cada hotel
+  // (`config.optionsToShow`, hoje 2) e marca `moreOptions: true` quando há
+  // mais. O botão "+" da tela busca o resto de UM hotel:
+  //   $.post(handlers.moreOptions, { optionID: options[0].ID, searchSessionID })
+  //     .done(s => cache.items[uid].availability = s.results[0].availability)
+  // Aqui é a mesma chamada, disparada só quando você pede — uma por clique.
+  function pedirOpcoesDoHotel(primeiroOptionID) {
+    var p = paramsDoSite();
+    p.optionID = primeiroOptionID;
+    return new Promise(function (resolve) {
+      $.post('/hotels/ashx/options.ashx', p)
+        .done(function (j) {
+          var res = j && j.results && j.results[0];
+          resolve(res && res.availability ? res : null);
+        })
+        .fail(function (xhr) {
+          if (!xhr || !xhr.status) marcarBloqueio('options.ashx');
+          resolve(null);
         });
-        if (novos.length) {
-          // entra logo depois das opções que já existiam daquele hotel
-          var ultimo = -1;
-          state.catalog.forEach(function (c, idx) { if (c.uid === base.uid) ultimo = idx; });
-          state.catalog.splice.apply(state.catalog, [ultimo + 1, 0].concat(novos));
-        }
-      }
-      state.completando.feitos = i + 1;
-      render();
-      await sleep(200);
-    }
-    state.completando = null;
+    });
+  }
+
+  async function carregarTarifasDoHotel(uid) {
+    if (state.bloqueado || !state.catalog) return;
+    var base = null;
+    state.catalog.forEach(function (c) { if (c.uid === uid && !base) base = c; });
+    if (!base) return;
+
+    state.carregandoHotel = base.hotel;
     render();
-    log('lista completa: ' + state.catalog.length + ' tarifas em ' + ordem.length + ' hotéis.');
+    var res = await pedirOpcoesDoHotel(base.optionID);
+    state.carregandoHotel = null;
+
+    if (res) {
+      // mantém a memória do site coerente, igual o "+" dele faz
+      var r = siteResults();
+      if (r && r.cache && r.cache.items[uid]) {
+        r.cache.items[uid].availability = res.availability;
+        r.cache.items[uid].hasUpdatedOptions = true;
+      }
+      state.hoteisCompletos[uid] = true;
+
+      var novos = catalogoDoResultado(res).filter(function (n) {
+        return !state.catalog.some(function (c) { return c.optionID === n.optionID; });
+      });
+      if (novos.length) {
+        // entra logo depois das opções que já existiam daquele hotel
+        var ultimo = -1;
+        state.catalog.forEach(function (c, idx) { if (c.uid === base.uid) ultimo = idx; });
+        state.catalog.splice.apply(state.catalog, [ultimo + 1, 0].concat(novos));
+      }
+      log(novos.length
+        ? '+' + novos.length + ' tarifa(s) de ' + base.hotel + '.'
+        : base.hotel + ' não tem outras tarifas além das que já estavam aqui.');
+    }
+    render();
   }
 
   // composição da busca segundo o próprio motor (availability.distribution)
@@ -880,7 +935,8 @@
 
   // ------------------------------------------------------------- interface
   var state = { mode: null, paxes: [], refs: null, fareLoaded: false,
-               catalog: null, checkin: '',
+               catalog: null, catalogFonte: '', checkin: '',
+               hoteisCompletos: {}, carregandoHotel: null, bloqueado: null,
                manual: { rooms: '1', adults: '', children: '' } };
 
   var domRows = readPaxRows(document, true);
@@ -950,13 +1006,27 @@
         }).join('') + '</select>';
     }
 
+    // tarifas extras do hotel escolhido — uma requisição, e só quando você pede
+    var maisBtn = '';
+    if (state.refs && state.refs.UID && !state.bloqueado) {
+      var uid = state.refs.UID;
+      var jaTem = state.hoteisCompletos[uid] || hotelJaCompleto(uid);
+      if (state.carregandoHotel) {
+        maisBtn = '<div style="color:#9aa7b8;margin-top:4px">⏳ buscando as tarifas de ' +
+                  esc(state.carregandoHotel) + '…</div>';
+      } else if (!jaTem) {
+        maisBtn = '<button data-act="mais-tarifas" style="' + btn +
+                  ';background:#4a5568;width:100%;margin-top:4px">＋ ver todas as tarifas deste hotel</button>';
+      }
+    }
+
     return '' +
     '<div style="border:1px solid ' + (state.faltaTarifa ? '#fc8181' : '#2d3748') +
          ';border-radius:8px;padding:8px;margin-bottom:10px">' +
       '<div style="color:' + (state.faltaTarifa ? '#fc8181' : '#9aa7b8') + ';margin-bottom:4px">Tarifa' +
         (state.refs ? ' — ' + esc(state.refs.hotel || state.refs.UID) + ' (' + esc(state.refs.from) + ')'
                     : ' — nenhuma escolhida') + '</div>' +
-      sel +
+      sel + maisBtn +
       (state.fromSearchBar ? '' :
         '<button data-act="load-fare" style="' + btn + ';background:#2b6cb0;width:100%;margin-top:4px">Carregar tarifa e ler os passageiros</button>') +
     '</div>';
@@ -1131,7 +1201,15 @@
       'Reserva TudoAzul v' + VERSION,
       'url: ' + window.location.pathname,
       'modo: ' + state.mode,
-      'catálogo: ' + (state.catalog ? state.catalog.length + ' tarifas / ' + (state.hoteisTotal || '?') + ' hotéis / ' + (state.paginas || 1) + ' páginas' : 'não carregado'),
+      'catálogo: ' + (state.catalog
+        ? state.catalog.length + ' tarifas · fonte: ' + (state.catalogFonte || '?') +
+          ' · hotéis completados na mão: ' + Object.keys(state.hoteisCompletos).length
+        : 'não carregado'),
+      '$jbe.results: ' + (siteResults()
+        ? 'sim · itens no cache: ' + Object.keys((siteResults().cache || {}).items || {}).length +
+          ' · hasAllOptions: ' + !!((siteResults().options.config || {}).hasAllOptions)
+        : 'não encontrado'),
+      'bloqueio da proteção: ' + (state.bloqueado || 'não'),
       'tarifa escolhida: ' + (state.refs ? (state.refs.from + (state.refs.hotel ? ' · ' + state.refs.hotel : '')) : 'nenhuma'),
       'check-in: ' + (state.checkin || '—'),
       resumoPreset(),
@@ -1326,6 +1404,10 @@
     if (act === 'min') { state.min = !state.min; render(); return; }
     if (act === 'drag') return;   // tratado no mousedown
     if (act === 'load-fare') { await loadFare(); return; }
+    if (act === 'mais-tarifas') {
+      if (state.refs && state.refs.UID) await carregarTarifasDoHotel(state.refs.UID);
+      return;
+    }
     if (act === 'build-manual') { buildManualPaxes(); return; }
     if (act === 'save-preset') { savePreset(); return; }
     if (act === 'clear-preset') { clearPreset(); return; }
@@ -1435,6 +1517,16 @@
       timer = setTimeout(function () {
         if (state.min) return;                       // painel fechado, não mexe
         var antes = state.refs && state.refs.optionID;
+        // A lista mudou: o site pode ter carregado mais hotéis (scroll infinito)
+        // ou trocado o filtro. Relemos a memória DELE — de graça, sem pedir nada
+        // ao servidor. Era isto que a v1.4.x fazia com uma enxurrada de POSTs.
+        if (state.catalogFonte === 'memória do site') {
+          var novo = catalogoDoCacheDoSite();
+          if (novo && novo.length !== (state.catalog || []).length) {
+            state.catalog = novo;
+            log('a lista da tela mudou: agora são ' + novo.length + ' tarifa(s) no dropdown.');
+          }
+        }
         render();                                    // reordena pelo DOM novo
         if (antes) {
           var ainda = listResultOptions().some(function (o) {
@@ -1471,10 +1563,15 @@
     e.preventDefault();
   });
 
-  // carrega o catálogo do results.ashx (fonte do v3) e refaz o painel
+  // catálogo: memória do site primeiro, results.ashx só se ela não existir
   if (state.mode !== 'form') {
     loadCatalog().then(function (cat) {
-      if (!cat) { log('results.ashx não respondeu — usando as tarifas visíveis na tela.'); return; }
+      if (!cat) {
+        // 🔴 se a proteção cortou, o aviso dela já está no log e é o que
+        // importa — não sobrescrever com um recado genérico.
+        if (!state.bloqueado) log('não consegui ler o catálogo — usando as tarifas visíveis na tela.');
+        return;
+      }
       state.catalog = cat;
       if (!state.paxes.length && cat[0].dist) {
         state.paxes = paxesFromDistribution(cat[0].dist);
@@ -1483,14 +1580,14 @@
       state.checkin = state.checkin || brDate(cat[0].checkin);
       render();
       var d = cat[0].dist || {};
-      completarTarifas(qsParam('searchSessionID') ||
-                       (/searchSessionID=(\d+)/.exec(window.location.hash) || [])[1]);
-      log('catálogo: ' + cat.length + ' tarifa(s) em ' + (state.hoteisTotal || '?') + ' hotel(is)' +
-          (state.paginas > 1 ? ', ' + state.paginas + ' páginas' : '') + ' · busca para ' +
+      var hoteis = {};
+      cat.forEach(function (c) { hoteis[c.uid] = 1; });
+      log('catálogo (' + (state.catalogFonte || '?') + '): ' + cat.length + ' tarifa(s) em ' +
+          Object.keys(hoteis).length + ' hotel(is) · busca para ' +
           (d.adults || 0) + ' adulto(s), ' + (d.children || 0) + ' criança(s), ' +
           (d.babies || 0) + ' bebê(s)' + (state.checkin ? ' · check-in ' + state.checkin : '') + '.\n' +
           resumoPreset());
-    }).catch(function (e) { log('falha lendo results.ashx: ' + e.message); });
+    }).catch(function (e) { log('falha lendo o catálogo: ' + e.message); });
   }
 
   var ckLimpo = limparCookieDuplicado();

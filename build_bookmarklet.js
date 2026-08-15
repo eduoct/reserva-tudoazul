@@ -15,7 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SRC = path.join(__dirname, "src", "azul_paxes_page2.js");
+const SRC = path.join(__dirname, 'azul_paxes_page2.js');
 const OUT_DIR = path.join(__dirname, 'dist');
 const PAGES = 'https://eduoct.github.io/reserva-tudoazul';
 
@@ -27,7 +27,8 @@ async function main() {
   let code = source;
   let how = 'sem minificação (terser não instalado)';
   try {
-    const { minify } = require('terser');
+    // terser vive no sandbox de teste; não há node_modules ao lado do script
+    const { minify } = require(process.env.TERSER || '/tmp/azultest/node_modules/terser');
     const res = await minify(source, {
       compress: { passes: 2 },
       mangle: true,
