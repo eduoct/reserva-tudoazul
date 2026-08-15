@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.6.0';
+  var VERSION = '1.6.1';
   var KOFI = 'https://ko-fi.com/eduoct';
 
   // Só monta a UI no site certo. Fora daqui, sai sem tocar na página.
@@ -68,7 +68,55 @@
     var m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(str || '').trim());
     if (!m) return null;
     var d = new Date(+m[3], +m[2] - 1, +m[1]);
-    return isNaN(d) ? null : d;
+    if (isNaN(d)) return null;
+    // 31/02/1990 vira 03/03/1990 no construtor do Date. Se não voltar igual,
+    // a data não existe — e o site recusaria depois de todo o trabalho.
+    if (d.getDate() !== +m[1] || d.getMonth() !== +m[2] - 1 || d.getFullYear() !== +m[3]) return null;
+    return d;
+  }
+
+  // ------------------------------------------ data de nascimento digitada
+  // O resto do painel só entende dd/mm/aaaa. Quem digita manda de tudo:
+  // 01011990, 1/1/1990, 1990-01-31, 01.01.90. Aqui a gente conserta em vez
+  // de reclamar "nascimento inválido" na hora de reservar.
+  function pad2(n) { return String(n).length < 2 ? '0' + n : String(n); }
+
+  // ano de 2 dígitos: 81 → 1981, 20 → 2020 (criança). O corte é o ano atual.
+  function ano4(y) {
+    y = String(y);
+    if (y.length === 4) return y;
+    var atual = new Date().getFullYear() % 100;
+    return (+y <= atual ? '20' : '19') + pad2(y);
+  }
+
+  // máscara enquanto digita: só entra quando o texto é exatamente o que a
+  // máscara produziria. Se a pessoa digitou as barras dela ("1/1/1990"),
+  // ficamos fora do caminho e arrumamos no blur.
+  function mascaraData(digitos) {
+    var d = String(digitos || '').replace(/\D/g, '').slice(0, 8);
+    if (d.length <= 2) return d;
+    if (d.length <= 4) return d.slice(0, 2) + '/' + d.slice(2);
+    return d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4);
+  }
+
+  function podeMascarar(raw) {
+    if (/[^\d/]/.test(raw)) return false;                 // tem '-', '.', letra…
+    var pos = [];
+    for (var i = 0; i < raw.length; i++) if (raw[i] === '/') pos.push(i);
+    return pos.length <= 2 && pos.every(function (p) { return p === 2 || p === 5; });
+  }
+
+  function normalizarData(v) {
+    var s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+    var iso = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(s);          // 1990-01-31
+    if (iso) return pad2(iso[3]) + '/' + pad2(iso[2]) + '/' + iso[1];
+    var br = /^(\d{1,2})[-/. ](\d{1,2})[-/. ](\d{2}|\d{4})$/.exec(s);   // 1/1/90
+    if (br) return pad2(br[1]) + '/' + pad2(br[2]) + '/' + ano4(br[3]);
+    var d = s.replace(/\D/g, '');
+    if (d.length === 8) return d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4);
+    if (d.length === 6) return d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + ano4(d.slice(4));
+    return s;                                              // não reconheci: devolve como veio
   }
 
   function ageAt(birthStr, refStr) {
@@ -1312,7 +1360,7 @@
       var d = await lookup(p);
       p.name = d.Name || p.name;
       p.surname = d.LastName || p.surname;
-      p.birthday = d.BirthDate || p.birthday;
+      p.birthday = normalizarData(d.BirthDate) || p.birthday;
       p.ffp = d.identifierNoFFP || p.ffp;
       p.comId = digits(p.doc);
       if (p.docKind === 'ffp') p.cpfFromFFP = d.identifierNoCPF || '';
@@ -1414,9 +1462,37 @@
     if (f.indexOf('m-') === 0) { state.manual[f.slice(2)] = e.target.value; return; }
     var p = state.paxes[+e.target.getAttribute('data-i')];
     if (!p) return;
+    if (f === 'birthday') {
+      var raw = e.target.value;
+      if (podeMascarar(raw)) {
+        var novo = mascaraData(raw);
+        if (novo !== raw) {
+          var noFim = e.target.selectionStart === raw.length;
+          e.target.value = novo;
+          try {
+            var caret = noFim ? novo.length : Math.min(e.target.selectionStart, novo.length);
+            e.target.setSelectionRange(caret, caret);
+          } catch (err) { /* input sem seleção: tudo bem */ }
+        }
+      }
+      p.birthday = e.target.value;
+      if (p.status === 'erro') p.status = 'manual';
+      return;
+    }
     p[f] = f === 'age' ? parseInt(e.target.value, 10) : e.target.value;
     if (p.status === 'erro' && /^(name|surname|birthday)$/.test(f)) p.status = 'manual';
   });
+
+  // no blur: 1/1/90, 1990-01-31 e 01.01.1990 viram 01/01/1990
+  panel.addEventListener('change', function (e) {
+    if (e.target.getAttribute('data-f') !== 'birthday') return;
+    var p = state.paxes[+e.target.getAttribute('data-i')];
+    if (!p) return;
+    var arrumado = normalizarData(e.target.value);
+    if (arrumado !== e.target.value) e.target.value = arrumado;
+    p.birthday = arrumado;
+    if (arrumado && !parseBR(arrumado)) log('⚠️ ' + (p.label || 'pax') + ': "' + arrumado + '" não é uma data válida — use dd/mm/aaaa.');
+  }, true);
 
   panel.addEventListener('change', function (e) {
     var f = e.target.getAttribute('data-f');
@@ -1705,6 +1781,8 @@
     fixarAceite: fixarAceite,
     aceitarPeloSite: aceitarPeloSite,
     aceitarOneTrust: aceitarOneTrust,
+    normalizarData: normalizarData,
+    mascaraData: mascaraData,
     esconderTarjaCookies: esconderTarjaCookies,
     resumoPreset: resumoPreset,
     diagnostico: copiarDiagnostico,
