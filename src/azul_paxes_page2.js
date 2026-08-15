@@ -25,7 +25,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.4.0';
+  var VERSION = '1.4.1';
   var KOFI = 'https://ko-fi.com/eduoct';
 
   // Só monta a UI no site certo. Fora daqui, sai sem tocar na página.
@@ -127,7 +127,20 @@
   function aceitarPeloSite() {
     var $btn = $('.cookie-policy__close:visible').first();
     if (!$btn.length) $btn = $('.cookie-policy__close').first();
+
+    // sem o botão conhecido, procura um "aceitar/entendi/ok" dentro da tarja
+    if (!$btn.length) {
+      acharTarjas().forEach(function (a) {
+        if ($btn.length) return;
+        $(a.el).find('button, a, [role=button]').each(function () {
+          if ($btn.length) return;
+          var t = ($(this).text() || '').trim().toLowerCase();
+          if (/aceit|concord|entendi|^ok$|prossegu|continuar/.test(t)) $btn = $(this);
+        });
+      });
+    }
     if (!$btn.length) return false;
+    state.aceiteClicado = ($btn.attr('class') || $btn.prop('tagName') || '?').toString().slice(0, 60);
     try { $btn.trigger('click'); } catch (e) { return false; }
     return (document.cookie.match(/accept-cookies=/g) || []).length === 1;
   }
@@ -153,17 +166,38 @@
   }
 
   // esconde a tarja só nesta visualização — sem tocar em cookie nenhum
-  function esconderTarjaCookies() {
-    var sumiu = 0;
-    $('[class*="cookie" i], [id*="cookie" i]').each(function () {
-      var $el = $(this);
-      if (panel && ($el[0] === panel || $.contains(panel, $el[0]))) return;
-      var pos = window.getComputedStyle($el[0]).position;
-      if (pos !== 'fixed' && pos !== 'sticky') return;
-      $el.hide();
-      sumiu++;
+  // A tarja nem sempre se chama "cookie": pode ser consent, lgpd, privacidade.
+  // Além de esconder, guardamos QUAIS elementos casaram, porque quando o aviso
+  // volta mesmo com o cookie salvo é sinal de que ele não é o que eu penso.
+  var SELETOR_TARJA = '[class*="cookie" i],[id*="cookie" i],[class*="consent" i],' +
+                      '[id*="consent" i],[class*="lgpd" i],[id*="lgpd" i],' +
+                      '[class*="privacid" i],[id*="privacid" i]';
+
+  function acharTarjas() {
+    var achados = [];
+    $(SELETOR_TARJA).each(function () {
+      var el = this;
+      if (panel && (el === panel || $.contains(panel, el))) return;
+      var st = window.getComputedStyle(el);
+      if (st.position !== 'fixed' && st.position !== 'sticky') return;
+      if (st.display === 'none' || st.visibility === 'hidden') return;
+      achados.push({
+        el: el,
+        desc: (el.tagName || '?').toLowerCase() +
+              (el.id ? '#' + el.id : '') +
+              (el.className && typeof el.className === 'string'
+                ? '.' + el.className.trim().split(/\s+/).slice(0, 3).join('.') : '') +
+              ' [' + st.position + ']'
+      });
     });
-    return sumiu;
+    return achados;
+  }
+
+  function esconderTarjaCookies() {
+    var achados = acharTarjas();
+    state.tarjas = achados.map(function (a) { return a.desc; });
+    achados.forEach(function (a) { $(a.el).hide(); });
+    return achados.length;
   }
 
   // ------------------------------------------- padrão de passageiros salvo
@@ -910,7 +944,7 @@
             porHotel[h].map(function (x) {
               var marcado = state.refs && state.refs.optionID === x.o.optionID ? ' selected' : '';
               return '<option value="' + x.i + '"' + marcado + '>' +
-                     esc(x.o.label) + (x.o._naTela === false ? ' (fora da lista atual)' : '') +
+                     esc(x.o.label) + (x.o._naTela === false ? ' (ainda não carregada na tela)' : '') +
                      '</option>';
             }).join('') + '</optgroup>';
         }).join('') + '</select>';
@@ -1102,6 +1136,11 @@
       'check-in: ' + (state.checkin || '—'),
       resumoPreset(),
       'tarifas casadas no DOM: ' + (state.casadosNoDom || 0),
+      'cookies do site: ' + (document.cookie.split(';').map(function (c) { return c.trim().split('=')[0]; })
+                              .filter(function (n) { return /cookie|consent|lgpd/i.test(n); }).join(', ') || '(nenhum de consentimento)'),
+      'accept-cookies presente: ' + ((document.cookie.match(/accept-cookies=/g) || []).length),
+      'tarjas encontradas: ' + ((state.tarjas || []).join(' | ') || '(nenhuma)'),
+      'botão de aceite clicado: ' + (state.aceiteClicado || '(nenhum)'),
       'pax: ' + state.paxes.length + ' (' +
         state.paxes.map(function (p) { return p.typeLabel + '/' + p.age + '/' + p.status; }).join(', ') + ')',
       'jQuery: ' + ($.fn && $.fn.jquery ? $.fn.jquery : '?'),
@@ -1480,7 +1519,9 @@
   } else if (ckFix.ok) {
     state.cookieAviso = 'aceite de cookies válido (' + ckFix.via + ')';
   } else if (tarjas) {
-    state.cookieAviso = 'tarja escondida';
+    state.cookieAviso = tarjas + ' tarja(s) escondida(s)';
+  } else if ((document.cookie.match(/accept-cookies=/g) || []).length) {
+    state.cookieAviso = 'cookie de aceite presente';
   }
   if (state.cookieAviso) render();
 
