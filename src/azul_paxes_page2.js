@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.5.0';
+  var VERSION = '1.6.0';
   var KOFI = 'https://ko-fi.com/eduoct';
 
   // Só monta a UI no site certo. Fora daqui, sai sem tocar na página.
@@ -133,10 +133,13 @@
     var $btn = $('.cookie-policy__close:visible').first();
     if (!$btn.length) $btn = $('.cookie-policy__close').first();
 
-    // sem o botão conhecido, procura um "aceitar/entendi/ok" dentro da tarja
+    // sem o botão conhecido, procura um "aceitar/entendi/ok" dentro da tarja.
+    // A do OneTrust fica de fora: ela tem caminho próprio (aceitarOneTrust),
+    // que roda antes e sabe conferir se o SDK realmente gravou o consentimento.
     if (!$btn.length) {
       acharTarjas().forEach(function (a) {
         if ($btn.length) return;
+        if (a.el.id === 'onetrust-banner-sdk' || $(a.el).closest('#onetrust-consent-sdk').length) return;
         $(a.el).find('button, a, [role=button]').each(function () {
           if ($btn.length) return;
           var t = ($(this).text() || '').trim().toLowerCase();
@@ -170,19 +173,75 @@
     return { ok: quantos() === 1, motivo: '' };
   }
 
+  // ------------------------------------------------------- tarja do OneTrust
+  // São DUAS tarjas diferentes neste site, e eu só conhecia uma:
+  //   1. a do próprio site  — `.cookie-policy`, cookie `accept-cookies`
+  //      (esta o buscador exige; sem ela a busca é bloqueada)
+  //   2. a do OneTrust      — `#onetrust-banner-sdk`, cookies `Optanon*`
+  // A do OneTrust não tem "cookie"/"consent" no id nem na classe (o id é
+  // `onetrust-banner-sdk`, as classes são `otFlat ot-wo-title`...), então o
+  // detector antigo nunca a encontrava — era por isso que ela sobrevivia.
+  //
+  // O botão de aceite é `#onetrust-accept-btn-handler`. Clicamos o botão de
+  // verdade: quem grava `OptanonConsent`/`OptanonAlertBoxClosed` é o SDK deles,
+  // no formato deles. NÃO escrevemos esses cookies na mão — não sei o formato
+  // do OptanonConsent, e cookie de consentimento chutado já derrubou este site
+  // uma vez (v1.0.6).
+  function nomesDeCookie() {
+    return document.cookie.split(';').map(function (c) { return c.trim().split('=')[0]; });
+  }
+
+  function temCookieOneTrust() {
+    return nomesDeCookie().some(function (n) { return /^OptanonAlertBoxClosed$/i.test(n); });
+  }
+
+  function aceitarOneTrust() {
+    var banner = document.getElementById('onetrust-banner-sdk');
+    if (!banner) return { achou: false };
+
+    var antes = temCookieOneTrust();
+    var btn = document.getElementById('onetrust-accept-btn-handler');
+    if (!btn) {                                   // id mudou: procura pelo texto
+      Array.prototype.slice.call(banner.querySelectorAll('button,a,[role=button]'))
+        .forEach(function (b) {
+          if (btn) return;
+          if (/aceit|concord|entendi|^ok$/i.test((b.textContent || '').trim())) btn = b;
+        });
+    }
+    var clicou = false;
+    if (btn) {
+      // click() nativo — o handler do OneTrust é addEventListener, não jQuery
+      try { btn.click(); clicou = true; } catch (e) { /* segue pro esconder */ }
+    }
+    return {
+      achou: true,
+      clicou: clicou,
+      botao: btn ? (btn.id || btn.className || btn.tagName) : '(não achei)',
+      jaTinha: antes,
+      gravou: temCookieOneTrust()
+    };
+  }
+
   // esconde a tarja só nesta visualização — sem tocar em cookie nenhum
-  // A tarja nem sempre se chama "cookie": pode ser consent, lgpd, privacidade.
-  // Além de esconder, guardamos QUAIS elementos casaram, porque quando o aviso
-  // volta mesmo com o cookie salvo é sinal de que ele não é o que eu penso.
+  // A tarja nem sempre se chama "cookie": pode ser consent, lgpd, privacidade,
+  // ou o nome do fornecedor (onetrust/optanon). Além de esconder, guardamos
+  // QUAIS elementos casaram, porque quando o aviso volta mesmo com o cookie
+  // salvo é sinal de que ele não é o que eu penso.
   var SELETOR_TARJA = '[class*="cookie" i],[id*="cookie" i],[class*="consent" i],' +
                       '[id*="consent" i],[class*="lgpd" i],[id*="lgpd" i],' +
-                      '[class*="privacid" i],[id*="privacid" i]';
+                      '[class*="privacid" i],[id*="privacid" i],' +
+                      '[id*="onetrust" i],[class*="onetrust" i],' +
+                      '[id*="optanon" i],[class*="optanon" i]';
 
   function acharTarjas() {
     var achados = [];
     $(SELETOR_TARJA).each(function () {
       var el = this;
       if (panel && (el === panel || $.contains(panel, el))) return;
+      // o OneTrust casa em vários filhos (`.ot-sdk-container`, `#onetrust-policy`…);
+      // se um ancestral já casou, esconder o filho é ruído no diagnóstico
+      var duplicado = achados.some(function (a) { return $.contains(a.el, el); });
+      if (duplicado) return;
       var st = window.getComputedStyle(el);
       if (st.position !== 'fixed' && st.position !== 'sticky') return;
       if (st.display === 'none' || st.visibility === 'hidden') return;
@@ -1214,9 +1273,15 @@
       'check-in: ' + (state.checkin || '—'),
       resumoPreset(),
       'tarifas casadas no DOM: ' + (state.casadosNoDom || 0),
-      'cookies do site: ' + (document.cookie.split(';').map(function (c) { return c.trim().split('=')[0]; })
-                              .filter(function (n) { return /cookie|consent|lgpd/i.test(n); }).join(', ') || '(nenhum de consentimento)'),
+      'cookies do site: ' + (nomesDeCookie()
+                              .filter(function (n) { return /cookie|consent|lgpd|optanon|onetrust/i.test(n); })
+                              .join(', ') || '(nenhum de consentimento)'),
       'accept-cookies presente: ' + ((document.cookie.match(/accept-cookies=/g) || []).length),
+      'OneTrust: ' + (state.oneTrust && state.oneTrust.achou
+        ? 'tarja presente · botão ' + state.oneTrust.botao +
+          ' · cliquei: ' + (state.oneTrust.clicou ? 'sim' : 'não') +
+          ' · OptanonAlertBoxClosed depois: ' + (state.oneTrust.gravou ? 'sim' : 'NÃO')
+        : 'sem tarja nesta página'),
       'tarjas encontradas: ' + ((state.tarjas || []).join(' | ') || '(nenhuma)'),
       'botão de aceite clicado: ' + (state.aceiteClicado || '(nenhum)'),
       'pax: ' + state.paxes.length + ' (' +
@@ -1590,6 +1655,11 @@
     }).catch(function (e) { log('falha lendo o catálogo: ' + e.message); });
   }
 
+  // OneTrust primeiro: o clique dele pode remover a tarja da página, e aí o
+  // fallback genérico do aceitarPeloSite não teria o que clicar.
+  var ot = aceitarOneTrust();
+  state.oneTrust = ot;
+
   var ckLimpo = limparCookieDuplicado();
   var ckFix;
   if (ckLimpo.tinha > 1) {
@@ -1611,7 +1681,13 @@
       : 'Sem formulário nesta página — modo dois POSTs. ' +
         (state.refs ? 'Tarifa detectada, é só carregar.' : 'Escolha/cole a tarifa (UID + optionID).'));
 
-  if (ckLimpo.tinha > 1) {
+  if (ot.achou && ot.clicou && ot.gravou && !ot.jaTinha) {
+    state.cookieAviso = 'aceitei a tarja do OneTrust';
+  } else if (ot.achou && ot.clicou && !ot.gravou) {
+    // o clique saiu mas o SDK não gravou: costuma ser bloqueio de rede no
+    // geolocation.onetrust.com (pi-hole/DNS/extensão). Escondida, mas volta.
+    state.cookieAviso = 'OneTrust não gravou o aceite — só escondi';
+  } else if (ckLimpo.tinha > 1) {
     state.cookieAviso = 'cookie duplicado removido';
   } else if (ckFix.ok) {
     state.cookieAviso = 'aceite de cookies válido (' + ckFix.via + ')';
@@ -1628,6 +1704,7 @@
     limparCookieDuplicado: limparCookieDuplicado,
     fixarAceite: fixarAceite,
     aceitarPeloSite: aceitarPeloSite,
+    aceitarOneTrust: aceitarOneTrust,
     esconderTarjaCookies: esconderTarjaCookies,
     resumoPreset: resumoPreset,
     diagnostico: copiarDiagnostico,
