@@ -1,6 +1,6 @@
 # Texto para o Ko-fi
 
-Copie os blocos abaixo. Onde estiver `[LINK]`, ponha o endereço da página de
+Copie os blocos abaixo. Onde estiver `https://eduoct.github.io/reserva-tudoazul/`, ponha o endereço da página de
 instalação (`azul-bookmarklet-vX.Y.Z.html` hospedado em algum lugar).
 
 Ko-fi: https://ko-fi.com/eduoct (já está embutido na página e no rodapé do painel).
@@ -51,10 +51,12 @@ cupom existe.
 O uso é **por sua conta e risco**. Projeto independente, sem qualquer vínculo com
 a Azul, sem garantia de funcionamento, resultado ou suporte.
 
-Ele **pula a página de reserva do site** — e é ali que aparecem as políticas do
-hotel (cancelamento, check-in/check-out, taxas cobradas no destino). **Leia essas
-condições na tela de confirmação antes de finalizar qualquer resgate.** O painel
-avisa quando a tarifa é não reembolsável, mas o resto das regras é com você.
+**Você não vê as políticas do hotel pelo caminho.** No fluxo normal do site existe
+uma página, antes da confirmação, que mostra cancelamento, horário de check-in e
+check-out e taxas cobradas no destino. Este atalho não passa por ela — nada é
+reservado nesse pulo, mas **confira essas condições na tela de confirmação antes
+de finalizar o resgate.** O painel avisa quando a tarifa é não reembolsável; o
+resto das regras é com você.
 
 Se você usar o botão "Padrão", os dados dos passageiros (nome, CPF, nascimento)
 ficam salvos **no seu próprio navegador**. Não saem da sua máquina. Em computador
@@ -63,10 +65,11 @@ compartilhado, use o botão de apagar.
 E pode parar de funcionar a qualquer momento: depende de como o site está montado
 hoje. Se a Azul mudar alguma coisa, quebra.
 
-**Instalação e instruções:** [LINK]
+**Instalação e instruções:** https://eduoct.github.io/reserva-tudoazul/
 
-Se te economizou tempo (ou pontos), um café ajuda a manter isso funcionando quando
-o site mudar. Se não puder, usa do mesmo jeito — é de graça.
+Salvou a sua viagem? Isto é de graça e vai continuar sendo. Mas se ele te poupou
+meia hora de formulário — ou uns bons milheiros — me paga um **cafezinho de
+aeroporto**. Você sabe o preço. Se não puder, usa do mesmo jeito, sem culpa.
 
 ---
 
@@ -95,11 +98,12 @@ o site mudar. Se não puder, usa do mesmo jeito — é de graça.
     É de graça, roda no seu navegador, não passa por servidor nenhum. Não
     finaliza resgate: para na confirmação e você decide.
 
-    Instalação e o que ele faz/não faz: [LINK]
+    Instalação e o que ele faz/não faz: https://eduoct.github.io/reserva-tudoazul/
 
-    Aviso importante: ele pula a página de reserva do site, que é onde aparecem
-    as políticas do hotel. Leia as condições na tela de confirmação antes de
-    fechar qualquer coisa. Uso por sua conta e risco.
+    Aviso importante: no caminho, o site deixa de mostrar as políticas do hotel
+    (cancelamento, check-in/out, taxas no destino). Ele não reserva nada sozinho,
+    mas confira essas condições na tela de confirmação antes de fechar. Uso por
+    sua conta e risco.
 
 ---
 
@@ -107,6 +111,6 @@ o site mudar. Se não puder, usa do mesmo jeito — é de graça.
 
 1. Suba o `VERSION` em `azul_paxes_page2.js`
 2. `node scripts/azul/build_bookmarklet.js`
-3. Publique o `.html` novo e atualize o `[LINK]`
+3. Publique o `.html` novo e atualize o `https://eduoct.github.io/reserva-tudoazul/`
 4. Avise no Ko-fi/grupo que precisa **reinstalar o favorito** — o código fica
    dentro do favorito, então versão nova só chega reinstalando
