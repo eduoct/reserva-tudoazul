@@ -2,6 +2,10 @@
 
 Versões anteriores à 1.6.2: ver `git log` (cada release é um commit `vX.Y.Z: …`).
 
+## 1.6.3 (10/11/2026)
+
+- POST 2: `comId` só leva o CPF de quem a consulta confirmou como cliente Azul. Criança sem consulta (ou com "sem cadastro") não vai mais no `comId` — mandar o CPF dela derrubava a reserva com HTTP 500 mesmo com idades e dados certos. Adulto sem consulta continua indo, como antes.
+
 ## 1.6.2 (09/11/2026): idade das crianças e trava do POST 2
 
 **Problema:** busca com 2 adultos + crianças de 7 e 4 (`paxs=22&ages=0704`). O POST 2
