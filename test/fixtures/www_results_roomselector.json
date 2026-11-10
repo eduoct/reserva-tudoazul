@@ -1,0 +1,20 @@
+{
+ "status": 200,
+ "url": "https://www.azulviagens.com.br/hotels/results.aspx?searchSessionID=705907#?order=etiquetaPrecio",
+ "roomSelectors": [
+  {
+   "data": "[{\"adults\":[{\"age\":30,\"isHandicapped\":false},{\"age\":30,\"isHandicapped\":false}],\"children\":[{\"age\":7,\"isHandicapped\":false},{\"age\":4,\"isHandicapped\":false}],\"babies\":[]}]",
+   "summary": "1 Apartamentos 4 Hóspedes"
+  }
+ ],
+ "dates": [
+  null,
+  "18/12/2026",
+  null,
+  "20/12/2026"
+ ],
+ "mw": {
+  "params": "paxs=22&ages=0704",
+  "zone": "Atibaia ,  São Paulo (Estado),  Brasil"
+ }
+}

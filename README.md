@@ -46,14 +46,29 @@ Tudo roda na sua sessão logada, no seu navegador.
     src/azul_paxes_page2.js    o script (fonte legível, comentado)
     build_bookmarklet.js       gera o bookmarklet + a página de instalação
     docs/index.html            a página publicada no GitHub Pages
+    docs/bookmarklet.js        o código que o favorito (loader) baixa a cada uso
+    test/                      teste offline (jsdom), fixtures sem dado pessoal
+    CHANGELOG.md               o que mudou em cada versão
     KOFI.md                    textos de divulgação
 
 ## Build
 
-    node build_bookmarklet.js
+    npm install
+    npm run build          # = node build_bookmarklet.js
 
-Gera `dist/azul-bookmarklet-v<versão>.html` (a página) e o `.txt` com a URL
-`javascript:`. Para publicar, copie o HTML gerado para `docs/index.html`.
+Gera `dist/azul-bookmarklet-v<versão>.html` (a página), o `.txt` com a URL
+`javascript:` e `dist/bookmarklet.js`. Para publicar, copie
+`dist/azul-bookmarklet-v<versão>.html` para `docs/index.html` e
+`dist/bookmarklet.js` para `docs/bookmarklet.js`. O Pages publica `docs/` do
+`main`: o merge é a publicação.
+
+## Teste
+
+    npm test
+
+Roda o painel numa página de resultados de mentira (jsdom + jQuery 1.12.4), com
+`fetch` simulado. Nenhuma requisição sai para o site. Cobre a leitura das idades
+das crianças, as travas do POST 2 e o build minificado de `docs/`.
 
 A versão sai da constante `VERSION` no topo do script. Quem já instalou precisa
 **reinstalar o favorito** para receber uma versão nova — o código mora dentro do

@@ -15,6 +15,11 @@
  *   4. "Reservar" dispara os dois POSTs em sequência: POST 1 (UID +
  *      optionID) seleciona a tarifa na sessão, POST 2 (action=book) cria a
  *      reserva e navega para confirmBooking.aspx, onde fica o cupom.
+ *      Antes de cada um, problemas() confere: idade de cada criança igual à
+ *      da busca (lida da barra, do seletor e da URL, conferidas entre si, e
+ *      de novo contra a tela de reserva do POST 1), nascimento batendo com
+ *      essa idade no check-in (a regra do site), todos os pax completos e
+ *      nenhuma consulta de CPF em erro ou rodando. Falhou = não manda.
  *
  * Também funciona se você já estiver na booking.aspx:
  *   - com o formulário de passageiros renderizado → preenche o form real;
@@ -30,7 +35,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.6.1';
+  var VERSION = '1.6.2';
   var KOFI = 'https://ko-fi.com/eduoct';
 
   // Só monta a UI no site certo. Fora daqui, sai sem tocar na página.
@@ -50,6 +55,7 @@
   if (!$) { alert('jQuery não encontrado — está na página do TudoAzul?'); return; }
 
   var TYPE_LABEL = { '0': 'Adulto', '1': 'Criança', '2': 'Bebê' };
+  var LOOKUP_TIMEOUT_MS = 20000;
   var HANDLER = '/booking/handlers/getHolderInfo.ashx';
   var TITLES_ADULT = [{ value: 'MR', text: 'Sr.' }, { value: 'MRS', text: 'Sra.' }];
   var TITLES_CHILD = [{ value: 'MSTR', text: 'Criança (M)' }, { value: 'MISS', text: 'Criança (F)' }];
@@ -359,8 +365,18 @@
     rows.forEach(function (p, i) {
       if (p.name || p.doc) return;                       // já preenchido, não mexe
       var alvo = null;
-      // 1º tenta a mesma posição, se o tipo bater
-      if (preset[i] && !usados[i] && String(preset[i].type) === String(p.type)) alvo = i;
+      // criança: 1º a do padrão cujo nascimento dá a idade da busca no check-in.
+      // Por posição, a busca "7 e 4" com o padrão salvo como "4 e 7" trocava os
+      // dados das duas — e o site recusa criança com nascimento de outra idade.
+      var ref = p.tripDate || (state && state.checkin) || '';
+      if (p.type !== '0' && ref && p.age != null && !isNaN(p.age)) {
+        for (var k = 0; k < preset.length; k++) {
+          if (!usados[k] && String(preset[k].type) === String(p.type) &&
+              ageAt(normalizarData(preset[k].birthday), ref) === +p.age) { alvo = k; break; }
+        }
+      }
+      // depois a mesma posição, se o tipo bater
+      if (alvo === null && preset[i] && !usados[i] && String(preset[i].type) === String(p.type)) alvo = i;
       // senão, o primeiro do mesmo tipo ainda não usado
       if (alvo === null) {
         for (var j = 0; j < preset.length; j++) {
@@ -382,6 +398,24 @@
       if (p.doc) hydrateInfo.comDoc++;
     });
     return rows;
+  }
+
+  // Idade da criança informada depois (fontes divergiam): o padrão tinha sido
+  // posto por posição. Com todas as idades conhecidas, refaz só as crianças
+  // vindas do padrão, agora casando pelo nascimento. Devolve true se mexeu.
+  function recasarCriancasDoPadrao() {
+    var kids = state.paxes.filter(function (p) { return p.type !== '0' && p.status === 'padrão'; });
+    if (!kids.length) return false;
+    if (state.paxes.some(function (p) { return p.type !== '0' && idadeOuNull(p.age) === null; })) return false;
+    var antes = kids.map(function (p) { return p.doc; }).join('|');
+    kids.forEach(function (p) {
+      p.doc = p.name = p.surname = p.birthday = p.ffp = p.comId = '';
+      p.status = 'pendente';
+    });
+    var aplicados = hydrateInfo.aplicados, comDoc = hydrateInfo.comDoc;
+    hydrate(state.paxes);
+    hydrateInfo.aplicados = aplicados; hydrateInfo.comDoc = comDoc;
+    return kids.map(function (p) { return p.doc; }).join('|') !== antes;
   }
 
   // o que o padrão fez — em texto, pra não ter que adivinhar
@@ -431,53 +465,201 @@
     }).get();
   }
 
-  // lê a composição direto da barra de busca da tela de resultados
-  // (.room-selector guarda o JSON de quartos/adultos/crianças/bebês)
-  function readSearchBarPaxes() {
-    var raw = null;
+  // ----------------------------------------- composição e idades da busca
+  // 🔴 A idade de cada criança tem que ser EXATAMENTE a da busca, na ordem da
+  // busca. O motor cotou a tarifa para essas idades; outra idade no POST 2 é
+  // HTTP 500 (v1.6.1, 09/11/2026: busca com 7 e 4, o POST 2 foi com 2 e 7).
+  // Por isso a idade sai de mais de uma fonte, e as fontes são conferidas:
+  //   1. barra   — `data-room-selector-data` do buscador de HOTÉIS: o JSON que o
+  //                servidor renderiza para ESTA busca: [{children:[{age:7},{age:4}]}]
+  //   2. seletor — o que o seletor de quartos do site tem agora. Primeiro pelo
+  //                próprio plugin ($(el).roomSelector('val'), o mesmo leitor que o
+  //                site usa para montar `paxs=22&ages=0704`); sem ele, os <select>
+  //                lidos do mesmo jeito que o roomSelector.load do site os preenche
+  //   3. URL     — `paxs` + `ages`, quando estiverem na URL
+  // A contagem ainda é conferida com o `distribution` do motor (problemas()).
+  // Divergiu? Ninguém chuta: a idade fica em branco e o painel pede.
+  // 🔴 O buscador de PACOTE (trip-searcher, aéreo + hotel) é outra busca, com
+  // criança a partir de 2 anos — nunca serve de fonte aqui.
 
-    // 1) o JSON que o widget guarda
-    $('.room-selector[data-room-selector-data]').each(function () {
-      if (raw) return;
-      try {
-        var j = JSON.parse($(this).attr('data-room-selector-data'));
-        if (j && j.length) raw = j;
-      } catch (e) { /* tenta o próximo */ }
+  function idadeOuNull(v) {
+    if (v === null || v === undefined || v === '') return null;
+    var n = parseInt(v, 10);
+    return isNaN(n) ? null : n;
+  }
+
+  // [{adults:[..], children:[{age}], babies:[{age}]}] → [{adults:n, children:[idades], babies:[idades]}]
+  function normalizarQuartos(j) {
+    if (typeof j === 'string') { try { j = JSON.parse(j); } catch (e) { return null; } }
+    if (!Array.isArray(j) || !j.length) return null;          // o plugin pode devolver o próprio jQuery
+    var out = j.map(function (r) {
+      r = r || {};
+      function idades(l) { return (l || []).map(function (p) { return idadeOuNull(p && p.age); }); }
+      return { adults: (r.adults || []).length, children: idades(r.children), babies: idades(r.babies) };
     });
+    return out.some(function (r) { return r.adults; }) ? out : null;
+  }
 
-    // 2) os selects vivos da barra (quando o JSON não está lá)
-    if (!raw) {
-      var $w = $('.room-selector').first();
-      var $ad = ($w.length ? $w : $(document)).find('.js-adults-selector');
-      if ($ad.length) {
-        raw = [];
-        $ad.each(function () {
-          var $room = $(this).closest('.room-fields');
-          if (!$room.length) $room = $(this).parent().parent();
-          var nA = parseInt($(this).val(), 10) || 0;
-          var nC = parseInt($room.find('.js-children-selector').val(), 10) || 0;
-          var nB = parseInt($room.find('.js-babies-selector').val(), 10) || 0;
-          var ages = $room.find('select.age[data-pax-type-label=children]').map(function () {
-            return parseInt($(this).val(), 10);
-          }).get().filter(function (a) { return !isNaN(a); });
-          raw.push({
-            adults: Array.apply(null, Array(nA)).map(function () { return { age: 30 }; }),
-            children: Array.apply(null, Array(nC)).map(function (_, i) { return { age: ages[i] != null ? ages[i] : 5 }; }),
-            babies: Array.apply(null, Array(nB)).map(function () { return { age: 1 }; })
-          });
-        });
-        if (!raw.some(function (r) { return r.adults.length; })) raw = null;
-      }
+  // idades dos não-adultos na ordem em que os pax são montados: por quarto,
+  // crianças e depois bebês — a mesma ordem do `ages=` do encoder do site
+  function idadesNaoAdultos(quartos) {
+    var out = [];
+    (quartos || []).forEach(function (r) { out = out.concat(r.children || [], r.babies || []); });
+    return out;
+  }
+
+  function totalAdultos(quartos) {
+    return (quartos || []).reduce(function (n, r) { return n + (r.adults || 0); }, 0);
+  }
+
+  function mesmaLista(a, b) {
+    return a.length === b.length && a.every(function (x, i) { return x === b[i]; });
+  }
+
+  function mesmoConjunto(a, b) {
+    function ord(l) { return l.slice().sort(function (x, y) { return x - y; }); }
+    return mesmaLista(ord(a), ord(b));
+  }
+
+  function txtIdades(l) {
+    if (!l || !l.length) return 'nenhuma';
+    return l.map(function (x) { return x == null || isNaN(x) ? '?' : x; }).join(', ');
+  }
+
+  // os seletores de quarto da página que são do buscador de HOTÉIS
+  function seletoresDeQuarto() {
+    var hotel = [], outros = [];
+    $('.room-selector').each(function () {
+      if (typeof panel !== 'undefined' && panel && $.contains(panel, this)) return;
+      var $el = $(this);
+      var ids = [$el.attr('id'), $el.find('[id]').first().attr('id'), $el.closest('[id]').attr('id')]
+        .join(' ');
+      if (/hotel-searcher/i.test(ids)) { hotel.push(this); return; }
+      if (/trip-searcher|package|pacote/i.test(ids)) return;      // busca de pacote: outra busca
+      outros.push(this);
+    });
+    return hotel.length ? hotel : outros;
+  }
+
+  function fonteBarra(els) {
+    var achados = [];
+    els.forEach(function (el) {
+      var raw = $(el).attr('data-room-selector-data');
+      if (!raw) return;
+      try {
+        var q = normalizarQuartos(JSON.parse(raw));
+        if (q) achados.push(q);
+      } catch (e) { /* JSON quebrado: fica de fora */ }
+    });
+    return achados;
+  }
+
+  function fonteSeletor(el) {
+    var $el = $(el);
+    if ($.fn.roomSelector) {
+      try {
+        var q = normalizarQuartos($el.roomSelector('val'));
+        if (q) return q;
+      } catch (e) { /* plugin com outra API: lê os <select> */ }
     }
+    var $box = $el.find('.room-selector-box');
+    if (!$box.length) $box = $el;
+    var $rooms = $box.find('.room');
+    if (!$rooms.length) return null;
+    var nRooms = parseInt($box.find('.nrooms').val(), 10) || 1;
+    function idades($sel, n) {
+      var out = [];
+      for (var i = 0; i < n; i++) out.push(i < $sel.length ? idadeOuNull($sel.eq(i).val()) : null);
+      return out;
+    }
+    var out = [];
+    $rooms.slice(0, nRooms).each(function () {
+      var $r = $(this);
+      var nA = parseInt($r.find('.js-adults-selector').val(), 10) || 0;
+      var nC = parseInt($r.find('.js-children-selector').val(), 10) || 0;
+      var nB = parseInt($r.find('.js-babies-selector').val(), 10) || 0;
+      var $ca = $r.find('.js-children-ages .age');
+      if (!$ca.length) $ca = $r.find('select.age[data-pax-type-label=children]');
+      var $ba = $r.find('.js-babies-ages .age');
+      if (!$ba.length) $ba = $r.find('select.age[data-pax-type-label=babies]');
+      out.push({ adults: nA, children: idades($ca, nC), babies: idades($ba, nB) });
+    });
+    return out.some(function (r) { return r.adults; }) ? out : null;
+  }
 
-    // 3) último recurso: o resumo textual ("1 Quartos 2 adulto(s) 2 criança(s)")
+  // paxs = por quarto hex(adultos) + hex(crianças+bebês); ages = 2 dígitos por
+  // criança, na ordem. Ex.: 2 adultos + 7 e 4 → paxs=22&ages=0704
+  function fonteUrl(href) {
+    href = href || window.location.href;
+    var mP = /[?&#]paxs=([0-9a-fA-F]+)(?=[&#]|$)/.exec(href);
+    if (!mP || mP[1].length % 2) return null;            // "A-C" (>15 num quarto): não arrisco
+    var mA = /[?&#]ages=(\d*)/.exec(href);
+    var idades = mA && mA[1] ? (mA[1].match(/\d{2}/g) || []).map(Number) : [];
+    var quartos = [];
+    for (var i = 0; i < mP[1].length; i += 2) {
+      quartos.push({ adults: parseInt(mP[1][i], 16), n: parseInt(mP[1][i + 1], 16) });
+    }
+    var total = quartos.reduce(function (s, q) { return s + q.n; }, 0);
+    if (idades.length !== total) return null;
+    var k = 0;
+    var out = quartos.map(function (q) {
+      var c = idades.slice(k, k + q.n); k += q.n;
+      return { adults: q.adults, children: c, babies: [] };
+    });
+    return out.some(function (r) { return r.adults; }) ? out : null;
+  }
+
+  // junta as fontes: a primeira que existir manda, as outras conferem
+  function lerComposicaoDaBusca(href) {
+    var els = seletoresDeQuarto();
+    var fontes = [];
+    fonteBarra(els).forEach(function (q, i) {
+      fontes.push({ nome: 'barra de busca' + (i ? ' #' + (i + 1) : ''), quartos: q });
+    });
+    var s = els.length ? fonteSeletor(els[0]) : null;
+    if (s) fontes.push({ nome: 'seletor de quartos', quartos: s });
+    var u = fonteUrl(href);
+    if (u) fontes.push({ nome: 'URL', quartos: u });
+    if (!fontes.length) return null;
+
+    var base = fontes[0], idBase = idadesNaoAdultos(base.quartos);
+    var divergem = fontes.slice(1).some(function (f) {
+      return !mesmaLista(idadesNaoAdultos(f.quartos), idBase) ||
+             totalAdultos(f.quartos) !== totalAdultos(base.quartos);
+    });
+    var semIdade = idBase.some(function (a) { return a === null; });
+    return {
+      quartos: base.quartos,
+      fonte: base.nome,
+      idades: idBase,
+      fontes: fontes.map(function (f) {
+        return { nome: f.nome, adultos: totalAdultos(f.quartos), idades: idadesNaoAdultos(f.quartos) };
+      }),
+      conflito: divergem || semIdade
+        ? fontes.map(function (f) {
+            return f.nome + ': ' + totalAdultos(f.quartos) + ' adulto(s), crianças ' +
+                   txtIdades(idadesNaoAdultos(f.quartos));
+          }).join(' · ')
+        : ''
+    };
+  }
+
+  // monta os pax da composição da busca. Com conflito, a idade das crianças
+  // fica em branco (ageIncerta) e o painel pede.
+  function readSearchBarPaxes() {
+    var comp = lerComposicaoDaBusca();
+    state.idadesBusca = comp;
+    var raw = comp ? comp.quartos : null;
+
+    // último recurso: o resumo textual ("1 Quartos 2 adulto(s) 2 criança(s)").
+    // Ele só CONTA — a idade fica em branco, nunca um 5 de chute.
     if (!raw) {
       var txt = $('.search-summary__paxes').first().text().replace(/\s+/g, ' ');
       var mA = /(\d+)\s*adulto/i.exec(txt), mC = /(\d+)\s*(criança|crianc|child)/i.exec(txt);
       if (mA) {
         raw = [{
-          adults: Array.apply(null, Array(+mA[1])).map(function () { return { age: 30 }; }),
-          children: Array.apply(null, Array(mC ? +mC[1] : 0)).map(function () { return { age: 5 }; }),
+          adults: +mA[1],
+          children: Array.apply(null, Array(mC ? +mC[1] : 0)).map(function () { return null; }),
           babies: []
         }];
       }
@@ -485,34 +667,57 @@
 
     if (!raw) return [];
 
+    var conflito = !!(comp && comp.conflito);
     var out = [];
     raw.forEach(function (room, ri) {
       var n = ri + 1;
-      function push(list, type, defAge) {
-        (list || []).forEach(function (p, i) {
-          var age = p && p.age != null ? p.age : defAge;
+      var sufixo = raw.length > 1 ? ' · quarto ' + n : '';
+      for (var a = 0; a < room.adults; a++) {
+        out.push(newPax({
+          room: n, type: '0', typeLabel: TYPE_LABEL['0'], age: 30,
+          titles: TITLES_ADULT, treatment: 'MR', label: TYPE_LABEL['0'] + ' ' + (a + 1) + sufixo
+        }));
+      }
+      function push(list, type) {
+        (list || []).forEach(function (age, i) {
+          if (conflito) age = null;
           out.push(newPax({
             room: n, type: type, typeLabel: TYPE_LABEL[type], age: age,
-            titles: type === '0' ? TITLES_ADULT : TITLES_CHILD,
-            treatment: type === '0' ? 'MR' : 'MSTR',
+            ageIncerta: age === null,
+            titles: TITLES_CHILD, treatment: 'MSTR',
             label: TYPE_LABEL[type] + ' ' + (i + 1) +
-                   (type === '0' ? '' : ' (' + age + ' ano(s))') +
-                   (raw.length > 1 ? ' · quarto ' + n : '')
+                   (age === null ? '' : ' (' + age + ' ano(s))') + sufixo
           }));
         });
       }
-      push(room.adults, '0', 30);
-      push(room.children, '1', 5);
-      push(room.babies, '2', 1);
+      push(room.children, '1');
+      push(room.babies, '2');
     });
     return hydrate(out);
   }
 
-  // traz o que já foi digitado para as linhas que o servidor devolveu
+  // traz o que já foi digitado para as linhas que o servidor devolveu.
+  // 🔴 Casa por tipo + idade, não por posição: a tela de reserva pode listar as
+  // crianças em outra ordem, e por posição os dados da de 7 iam para a de 4.
   function mergeTyped(serverRows, typed) {
+    var usados = {};
+    function par(p, i) {
+      var j, t;
+      for (j = 0; j < typed.length; j++) {
+        t = typed[j];
+        if (usados[j] || String(t.type) !== String(p.type)) continue;
+        if (p.type === '0' || (t.age != null && +t.age === +p.age)) return j;
+      }
+      // idade desconhecida no painel: mesma posição, se o tipo bater
+      t = typed[i];
+      if (t && !usados[i] && String(t.type) === String(p.type) && (t.age == null || isNaN(t.age))) return i;
+      return -1;
+    }
     serverRows.forEach(function (p, i) {
-      var t = typed[i];
-      if (!t) return;
+      var j = par(p, i);
+      if (j < 0) return;
+      usados[j] = true;
+      var t = typed[j];
       ['doc', 'docKind', 'name', 'surname', 'birthday', 'ffp', 'comId', 'cpfFromFFP', 'status']
         .forEach(function (k) { if (t[k]) p[k] = t[k]; });
       if (t.treatment && p.titles.some(function (x) { return x.value === t.treatment; })) {
@@ -527,16 +732,29 @@
     var id = digits(pax.doc);
     if (!id) throw new Error('documento vazio');
 
-    var res = await fetch(HANDLER + '?_=' + Date.now() + '&id=' + encodeURIComponent(id), {
-      credentials: 'same-origin',
-      headers: {
-        'accept': 'application/json, text/javascript, */*; q=0.01',
-        'x-requested-with': 'XMLHttpRequest'
-      }
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    // sem tempo-limite, uma consulta presa deixava o pax em "…" para sempre —
+    // e o painel seguia para o POST 2 com ele pela metade
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function () { ctl.abort(); }, LOOKUP_TIMEOUT_MS) : null;
+    var res, txt, data;
+    try {
+      res = await fetch(HANDLER + '?_=' + Date.now() + '&id=' + encodeURIComponent(id), {
+        credentials: 'same-origin',
+        signal: ctl ? ctl.signal : undefined,
+        headers: {
+          'accept': 'application/json, text/javascript, */*; q=0.01',
+          'x-requested-with': 'XMLHttpRequest'
+        }
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      txt = await res.text();
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error('a consulta passou de ' + (LOOKUP_TIMEOUT_MS / 1000) + ' s sem resposta');
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
 
-    var txt = await res.text(), data;
     try { data = JSON.parse(txt); }
     catch (e) { throw new Error('resposta não-JSON (sessão caiu ou Akamai barrou)'); }
 
@@ -750,23 +968,29 @@
   // ⚠️ O `distribution` traz só a CONTAGEM de crianças, não as idades. Inventar
   // idade aqui manda para o motor um pax que ele não cotou — e ele responde
   // HTTP 500. Então marcamos como incerta e pedimos no painel.
+  // Se a URL/seletor trouxe as idades e a contagem bate, usa (sem conflito).
   function paxesFromDistribution(d) {
     if (!d) return [];
     var out = [];
-    function push(n, type, defAge, incerta) {
+    var comp = state.idadesBusca;
+    var nNA = (d.children || 0) + (d.babies || 0);
+    var conhecidas = comp && !comp.conflito && comp.idades.length === nNA ? comp.idades : null;
+    var k = 0;
+    function push(n, type) {
       for (var i = 0; i < (n || 0); i++) {
+        var age = type === '0' ? 30 : (conhecidas ? conhecidas[k++] : null);   // adulto é 30 no site, sempre
         out.push(newPax({
-          room: 1, type: type, typeLabel: TYPE_LABEL[type], age: defAge,
-          ageIncerta: !!incerta,
+          room: 1, type: type, typeLabel: TYPE_LABEL[type], age: age,
+          ageIncerta: type !== '0' && age === null,
           titles: type === '0' ? TITLES_ADULT : TITLES_CHILD,
           treatment: type === '0' ? 'MR' : 'MSTR',
-          label: TYPE_LABEL[type] + ' ' + (i + 1)
+          label: TYPE_LABEL[type] + ' ' + (i + 1) + (type !== '0' && age !== null ? ' (' + age + ' ano(s))' : '')
         }));
       }
     }
-    push(d.adults, '0', 30, false);        // adulto é 30 no site, sempre
-    push(d.children, '1', null, true);
-    push(d.babies, '2', null, true);
+    push(d.adults, '0');
+    push(d.children, '1');
+    push(d.babies, '2');
     return hydrate(out);
   }
 
@@ -903,12 +1127,13 @@
     // (porque o aniversário já passou, por exemplo) faz o motor receber um pax
     // que ele não cotou — e responder HTTP 500. Com dois adultos isso passava
     // batido, porque adulto é adulto em qualquer idade.
-    // A idade calculada do nascimento continua sendo checada em warnings(),
-    // como aviso para você, não como valor enviado.
+    // A idade calculada do nascimento é conferida em problemas() — e barra o
+    // envio se não bater, igual ao formulário do site. Criança sem idade nunca
+    // chega aqui (problemas() barra); não há idade de chute para criança.
     var tipo = parseInt(p.type, 10);
     var idade = parseInt(p.age, 10);
-    if (isNaN(idade)) idade = ageAt(p.birthday, state.checkin);
-    if (idade === null || isNaN(idade)) idade = tipo === 0 ? 30 : 0;
+    if (isNaN(idade) && tipo === 0) idade = 30;
+    if (isNaN(idade)) throw new Error((p.label || 'criança') + ': sem a idade da busca — não mando idade de chute');
 
     return {
       paxType: tipo,
@@ -994,6 +1219,13 @@
       ? (window.urlChangeParams ? urlChangeParams(window.location.href) : window.location.href)
       : bookingUrl(state.refs.UID);
 
+    // o que foi no POST 2, para o diagnóstico (só tipo e idade, nada pessoal)
+    try {
+      state.ultimoEnvio = JSON.parse(params.bookingPaxes).map(function (r) {
+        return r.paxes.map(function (p) { return (p.paxType === 0 ? 'A' : 'C') + p.paxAge; }).join(',');
+      }).join(' | ');
+    } catch (e) { state.ultimoEnvio = '(não li o bookingPaxes)'; }
+
     if (state.mode === 'form' && window.sendPost) { window.sendPost(url, params); return; }
 
     var body = Object.keys(params).map(function (k) {
@@ -1019,11 +1251,22 @@
     var txt = ($(doc).find('body').text() || '').replace(/\s+/g, ' ').trim();
 
     if (/desculpe-nos|erro inesperado|houve um erro/i.test(txt)) {
-      state.ultimaRespostaErro = txt.slice(0, 600);
-      log('❌ O site respondeu com a PÁGINA DE ERRO no POST 2.\n' +
+      state.ultimaRespostaErro = 'HTTP ' + r.status + ' · ' + txt.slice(0, 600);
+      var crian = state.paxes.filter(function (p) { return p.type !== '0'; })
+                             .map(function (p) { return +p.age; });
+      var comp = state.idadesBusca;
+      log('❌ O site respondeu com a PÁGINA DE ERRO no POST 2 (HTTP ' + r.status + ').\n' +
           'A reserva não foi criada — você continua na tela de resultados.\n\n' +
-          'HTTP ' + r.status + ' · resposta: ' + txt.slice(0, 180) + '…\n\n' +
-          'Clique em 🩺 e me mande o diagnóstico.');
+          'Antes de mandar eu conferi' +
+          (crian.length
+            ? ': crianças com ' + txtIdades(crian) + ' ano(s), iguais às da busca' +
+              (comp ? ' (' + comp.fonte + ')' : '') + ', e o nascimento de cada uma batendo com a idade no check-in;'
+            : ':') +
+          ' todos os passageiros completos, nenhuma consulta de CPF com erro.\n' +
+          'Então o mais provável é a sessão/tarifa ter vencido (o optionID morre junto com a busca): ' +
+          'refaça a busca do zero, abra o painel de novo e tente outra vez.\n\n' +
+          'Se repetir, clique em 🩺 e me mande o diagnóstico.\n' +
+          'resposta: ' + txt.slice(0, 160) + '…');
       render();
       return;
     }
@@ -1044,7 +1287,16 @@
   var state = { mode: null, paxes: [], refs: null, fareLoaded: false,
                catalog: null, catalogFonte: '', checkin: '',
                hoteisCompletos: {}, carregandoHotel: null, bloqueado: null,
-               manual: { rooms: '1', adults: '', children: '' } };
+               manual: { rooms: '1', adults: '', children: '' },
+               idadesBusca: null, idadesServidor: null, dist: null, consultando: 0,
+               divergencia: '', ultimoBloqueio: null, ultimoEnvio: '' };
+
+  // check-in e composição do motor já na abertura (memória do site, 0
+  // requisições): o padrão salvo casa cada criança pela idade no check-in
+  (function () {
+    var c = catalogoDoCacheDoSite();
+    if (c && c[0]) { state.checkin = brDate(c[0].checkin); state.dist = c[0].dist || null; }
+  })();
 
   var domRows = readPaxRows(document, true);
   if (domRows.length) {
@@ -1082,11 +1334,15 @@
     if (!state.paxes.length) return 'nenhum pax carregado ainda';
     var ad = state.paxes.filter(function (p) { return p.type === '0'; }).length;
     var outros = state.paxes.filter(function (p) { return p.type !== '0'; })
-      .map(function (p) { return p.typeLabel.toLowerCase() + ' ' + p.age + 'a'; });
+      .map(function (p) {
+        return p.typeLabel.toLowerCase() + ' ' + (p.age == null || isNaN(p.age) ? '?' : p.age) + 'a';
+      });
     var rooms = {};
     state.paxes.forEach(function (p) { rooms[p.room] = 1; });
+    var comp = state.idadesBusca;
     return ad + ' adulto(s)' + (outros.length ? ' + ' + outros.join(', ') : '') +
-           ' · ' + Object.keys(rooms).length + ' quarto(s) · ' + state.paxes.length + ' pax';
+           ' · ' + Object.keys(rooms).length + ' quarto(s) · ' + state.paxes.length + ' pax' +
+           (outros.length && comp && !comp.conflito ? ' · idades: ' + comp.fonte : '');
   }
 
   function fareBlock() {
@@ -1188,9 +1444,33 @@
     log('composição montada: ' + out.length + ' pax. Informe os documentos.');
   }
 
+  // avisos sobre as idades, no topo da lista de passageiros
+  function idadesBlock() {
+    var comp = state.idadesBusca, h = '';
+    var box = 'border-radius:8px;padding:8px;margin-bottom:10px;font-size:12px;color:#e6edf7;';
+    if (state.divergencia) {
+      h += '<div style="' + box + 'border:1px solid #fc8181;background:#2d1414">' +
+           '<strong style="color:#fc8181">⛔ Idades não batem com a tela de reserva do site</strong><br>' +
+           esc(state.divergencia) + '</div>';
+    }
+    var faltam = state.paxes.some(function (p) { return p.type !== '0' && (p.age == null || isNaN(p.age)); });
+    if (comp && comp.conflito && faltam) {
+      h += '<div style="' + box + 'border:1px solid #ecc94b;background:#1a1a10">' +
+           '<strong style="color:#ecc94b">⚠️ Não tenho certeza das idades das crianças</strong><br>' +
+           'As fontes da página não batem: ' + esc(comp.conflito) + '.<br>' +
+           'Informe abaixo a idade de cada criança <strong>exatamente como foi pesquisada</strong>, na ordem da busca. ' +
+           'Idade diferente da cotada faz o site recusar a reserva. Na dúvida, refaça a busca.</div>';
+    } else if (faltam) {
+      h += '<div style="' + box + 'border:1px solid #ecc94b;background:#1a1a10">' +
+           '<strong style="color:#ecc94b">⚠️ Falta a idade das crianças</strong><br>' +
+           'Não consegui ler da página. Informe abaixo a idade de cada uma exatamente como foi pesquisada.</div>';
+    }
+    return h;
+  }
+
   function paxBlock() {
     if (!state.fareLoaded) return '<div style="color:#9aa7b8">Defina a composição acima (ou carregue a tarifa) para listar os passageiros.</div>';
-    return state.paxes.map(function (p, i) {
+    return idadesBlock() + state.paxes.map(function (p, i) {
       var color = p.status === 'ok' ? '#48bb78' : p.status === 'manual' ? '#ecc94b' :
                   p.status === 'erro' ? '#fc8181' : p.status === 'padrão' ? '#63b3ed' : '#718096';
       return '' +
@@ -1222,7 +1502,7 @@
         '</div>' +
         (p.ageIncerta
           ? '<div style="display:flex;gap:4px;align-items:center">' +
-              '<span style="color:#ecc94b;font-size:11px;flex:1">idade usada na busca (o site não me contou):</span>' +
+              '<span style="color:#ecc94b;font-size:11px;flex:1">idade usada na busca (anos, a mesma da pesquisa):</span>' +
               '<input data-f="age" data-i="' + i + '" value="' + (p.age == null ? '' : esc(p.age)) + '" ' +
                      'placeholder="anos" style="' + css + ';width:70px">' +
             '</div>'
@@ -1301,6 +1581,17 @@
     if (el) el.textContent = msg;
   }
 
+  // de onde saiu cada idade de criança (sem nada pessoal)
+  function descreverIdades() {
+    var c = state.idadesBusca, d = state.dist;
+    var dist = d ? ' · distribution do motor: ' + (d.adults || 0) + ' adulto(s), ' +
+                   ((d.children || 0) + (d.babies || 0)) + ' criança(s)' : '';
+    if (!c) return 'não li da página (sem barra/seletor/URL)' + dist;
+    return txtIdades(c.idades) + ' · fonte: ' + c.fonte + ' · ' +
+      c.fontes.map(function (f) { return f.nome + ' [' + f.adultos + 'A; ' + txtIdades(f.idades) + ']'; }).join(' · ') +
+      (c.conflito ? ' · ⚠️ FONTES DIVERGEM' : '') + dist;
+  }
+
   // Diagnóstico para suporte: nada de nome, CPF ou nº de programa — só o que
   // ajuda a entender por que quebrou.
   function copiarDiagnostico() {
@@ -1333,7 +1624,17 @@
       'tarjas encontradas: ' + ((state.tarjas || []).join(' | ') || '(nenhuma)'),
       'botão de aceite clicado: ' + (state.aceiteClicado || '(nenhum)'),
       'pax: ' + state.paxes.length + ' (' +
-        state.paxes.map(function (p) { return p.typeLabel + '/' + p.age + '/' + p.status; }).join(', ') + ')',
+        state.paxes.map(function (p) {
+          return p.typeLabel + '/' + (p.age == null || isNaN(p.age) ? '?' : p.age) + '/' + p.status;
+        }).join(', ') + ')',
+      'idades da busca: ' + descreverIdades(),
+      'tela de reserva (POST 1): ' + (state.idadesServidor
+        ? 'crianças ' + txtIdades(state.idadesServidor) + ' · linhas tipo/idade/data: ' + (state.linhasServidor || '?')
+        : '—'),
+      'POST 2 enviado com: ' + (state.ultimoEnvio || '—'),
+      'checagem antes do POST 2: ' + (state.ultimoBloqueio
+        ? 'BLOQUEADO — ' + state.ultimoBloqueio.join(' | ')
+        : (state.ultimoEnvio ? 'ok' : 'ainda não rodou')),
       'jQuery: ' + ($.fn && $.fn.jquery ? $.fn.jquery : '?'),
       'navegador: ' + navigator.userAgent,
       (state.ultimaRespostaErro ? '--- resposta do POST 2 ---\n' + state.ultimaRespostaErro : ''),
@@ -1354,8 +1655,11 @@
 
   // ------------------------------------------------------------- ações
   async function doLookup(p) {
+    if (!p) return;
     if (!digits(p.doc)) { p.status = 'sem doc'; render(); return; }
-    p.status = '…'; render();
+    p.status = '…';
+    state.consultando++;
+    render();
     try {
       var d = await lookup(p);
       p.name = d.Name || p.name;
@@ -1369,36 +1673,93 @@
       p.comId = '';
       p.status = /sem cadastro/.test(err.message) ? 'manual' : 'erro';
       log('[' + p.label + '] ' + err.message +
-          (p.status === 'manual' ? ' — preencha os campos à mão' : ''));
+          (p.status === 'manual' ? ' — preencha os campos à mão'
+                                 : ' — clique 🔍 de novo; sem cadastro no TudoAzul, preencha à mão'));
+    } finally {
+      state.consultando = Math.max(0, state.consultando - 1);
     }
     render();
   }
 
-  function warnings() {
+  // 🔴 O que impede o POST 2. Antes da v1.6.2 isto era só aviso dentro do
+  // confirm(): dava para mandar criança sem nascimento, com a consulta do CPF
+  // em erro ou ainda rodando — e o motor respondia HTTP 500.
+  // A regra de idade é a do próprio site (isValidAge, base.min.js): criança
+  // tem que ter EXATAMENTE a idade da busca na data do check-in; adulto, no
+  // mínimo `adultAgeFrom`. O formulário do site barra isso; o atalho pula o
+  // formulário, então barramos aqui.
+  // Nenhuma mensagem leva nome, CPF ou nascimento (vão para o diagnóstico).
+  function problemas() {
+    var out = [];
+    if (state.consultando > 0 || state.paxes.some(function (p) { return p.status === '…'; })) {
+      out.push('ainda há consulta de CPF em andamento — espere terminar');
+    }
+    if (state.divergencia) out.push(state.divergencia);
+
+    var d = state.dist;
+    if (d && state.mode !== 'form' && state.paxes.length) {
+      var nA = state.paxes.filter(function (p) { return p.type === '0'; }).length;
+      var nC = state.paxes.length - nA;
+      var eA = d.adults || 0, eC = (d.children || 0) + (d.babies || 0);
+      if (nA !== eA || nC !== eC) {
+        out.push('a busca é para ' + eA + ' adulto(s) e ' + eC + ' criança(s), o painel tem ' +
+                 nA + ' e ' + nC + ' — recarregue a página e abra o painel de novo');
+      }
+    }
+
+    state.paxes.forEach(function (p) {
+      var nome = p.label || p.typeLabel;
+      var crianca = p.type !== '0';
+      var idade = idadeOuNull(p.age);
+      if (crianca && idade === null) out.push(nome + ': falta a idade usada na busca');
+      if (p.status === 'erro') {
+        out.push(nome + ': a consulta do CPF falhou — clique 🔍 de novo; sem cadastro, preencha à mão');
+      }
+      if (!digits(p.doc)) out.push(nome + ': falta o documento');
+      if (!String(p.name || '').trim() || !String(p.surname || '').trim()) out.push(nome + ': falta nome/sobrenome');
+      if (!parseBR(p.birthday)) { out.push(nome + ': nascimento vazio ou inválido (dd/mm/aaaa)'); return; }
+
+      var ref = p.tripDate || state.checkin;
+      var a = ageAt(p.birthday, ref);
+      if (a === null) return;                      // sem data de check-in: fica em avisos()
+      if (!crianca && a < p.adultAgeFrom) {
+        out.push(nome + ': pelo nascimento tem ' + a + ' ano(s) no check-in — adulto precisa de ' + p.adultAgeFrom + '+');
+      }
+      if (crianca && idade !== null && a !== idade) {
+        out.push(nome + ': pelo nascimento terá ' + a + ' ano(s) no check-in (' + ref + '), mas a busca foi para ' +
+                 idade + ' — o site exige a mesma idade. Confira se os dados não são de outra criança; ' +
+                 'se a idade da busca estava errada, refaça a busca');
+      }
+    });
+    return out;
+  }
+
+  // o que não impede, mas vale saber
+  function avisos() {
     var w = [];
     state.paxes.forEach(function (p) {
-      if (p.ageIncerta && (p.age == null || isNaN(p.age))) {
-        w.push(p.label + ': FALTA a idade usada na busca — sem ela o site recusa a reserva');
-      }
-      if (!digits(p.doc)) w.push(p.label + ': documento vazio');
-      if (!p.name || !p.surname) w.push(p.label + ': nome/sobrenome vazio');
-      if (!parseBR(p.birthday)) { w.push(p.label + ': nascimento inválido'); return; }
-      var a = ageAt(p.birthday, p.tripDate);
-      if (a === null) return;
-      if (p.type === '0' && a < p.adultAgeFrom) {
-        w.push(p.label + ': nasc. dá ' + a + ' anos na viagem (adulto exige ' + p.adultAgeFrom + '+)');
-      }
-      if (p.type !== '0' && a !== p.age) {
-        w.push(p.label + ': nasc. dá ' + a + ' anos na viagem, a busca pediu ' + p.age);
+      if (parseBR(p.birthday) && !parseBR(p.tripDate || state.checkin)) {
+        w.push((p.label || p.typeLabel) + ': não sei a data do check-in — não deu para conferir a idade pelo nascimento');
       }
     });
     return w;
+  }
+
+  function bloquear(lista, quando) {
+    state.ultimoBloqueio = lista.slice();
+    render();
+    log('⛔ Não mandei a reserva' + (quando ? ' (' + quando + ')' : '') + '. Falta acertar:\n• ' +
+        lista.join('\n• ') + '\n\nNada foi criado.');
   }
 
   async function loadFare() {
     if (!state.refs || !state.refs.UID || !state.refs.optionID) {
       log('❌ informe UID e optionID (ou escolha uma opção da tela de resultados).');
       return;
+    }
+    if (state.consultando > 0) {
+      log('⏳ espere a consulta dos CPFs terminar — trocar a tarifa no meio embaralha os passageiros.');
+      return false;
     }
     log('POST 1 — selecionando a tarifa…');
     try {
@@ -1431,6 +1792,32 @@
         log('❌ o POST 1 não trouxe formulário e eu não tenho composição de passageiros.' +
             (aviso ? '\nA página respondeu: "' + aviso + '"' : '') +
             '\nDefina os passageiros no bloco "Composição" acima.');
+        return false;
+      }
+      // 🔴 As linhas da tela de reserva trazem a idade que o SITE vai cobrar
+      // (data-pax-age — o serializer dele manda exatamente isso). Até a v1.6.1
+      // elas substituíam os pax do painel sem conferência nenhuma, e o que você
+      // tinha digitado ia junto POR POSIÇÃO. Agora: se as idades das crianças
+      // não forem as mesmas da busca, para tudo e mostra as duas.
+      var doSite = rows.filter(function (p) { return p.type !== '0'; })
+                       .map(function (p) { return idadeOuNull(p.age); });
+      var doPainel = state.paxes.filter(function (p) { return p.type !== '0'; })
+                                .map(function (p) { return idadeOuNull(p.age); });
+      state.idadesServidor = doSite;
+      // as linhas cruas (tipo/idade/data) vão para o diagnóstico — sem nada pessoal
+      state.linhasServidor = rows.map(function (p) {
+        return p.type + '/' + (isNaN(p.age) ? '?' : p.age) + '/' + (p.tripDate || '-');
+      }).join(' ');
+      var painelSabe = state.paxes.length && doPainel.every(function (a) { return a !== null; });
+      if (doSite.some(function (a) { return a === null; }) ||
+          (painelSabe && !mesmoConjunto(doSite, doPainel))) {
+        var comp = state.idadesBusca;
+        state.divergencia = 'a tela de reserva do site pediu crianças de ' + txtIdades(doSite) +
+          ' ano(s), mas a busca ' + (comp ? '(' + comp.fonte + ') ' : '') + 'é de ' + txtIdades(doPainel) +
+          '. Idade diferente da cotada faz o site responder erro. Feche outras abas de busca do site ' +
+          '(outra busca na mesma sessão pode ter trocado as idades), refaça a busca do zero e abra o painel de novo.';
+        render();
+        log('⛔ ' + state.divergencia + '\nNÃO mandei o POST 2. Nada foi criado.');
         return false;
       }
       if (state.paxes.length && rows.length !== state.paxes.length) {
@@ -1479,8 +1866,10 @@
       if (p.status === 'erro') p.status = 'manual';
       return;
     }
-    p[f] = f === 'age' ? parseInt(e.target.value, 10) : e.target.value;
+    p[f] = f === 'age' ? idadeOuNull(e.target.value) : e.target.value;
     if (p.status === 'erro' && /^(name|surname|birthday)$/.test(f)) p.status = 'manual';
+    // documento trocado: o que veio da consulta anterior não vale mais para ele
+    if (f === 'doc' && /^(erro|ok|sem doc)$/.test(p.status)) p.status = 'pendente';
   });
 
   // no blur: 1/1/90, 1990-01-31 e 01.01.1990 viram 01/01/1990
@@ -1526,7 +1915,9 @@
     }
     if (f === 'uid' || f === 'optionid') return;
     var p = state.paxes[+e.target.getAttribute('data-i')];
-    if (p) p[f] = e.target.value;
+    if (!p) return;
+    p[f] = f === 'age' ? idadeOuNull(e.target.value) : e.target.value;
+    if (f === 'age' && recasarCriancasDoPadrao()) render();
   });
 
   panel.addEventListener('click', function (e) {
@@ -1556,10 +1947,14 @@
     if (act === 'lookup') { await doLookup(state.paxes[+e.target.getAttribute('data-i')]); return; }
 
     if (act === 'lookup-all') {
+      if (state.consultando > 0) { log('⏳ já estou consultando — espere terminar.'); return; }
       log('consultando…');
-      for (var i = 0; i < state.paxes.length; i++) { await doLookup(state.paxes[i]); await sleep(400); }
-      var w = warnings();
-      log(w.length ? '⚠️ ' + w.join('\n⚠️ ') : 'tudo pronto — pode simular.');
+      var lista = state.paxes.slice();
+      for (var i = 0; i < lista.length; i++) { await doLookup(lista[i]); await sleep(400); }
+      var pr = problemas(), av = avisos();
+      log(pr.length
+        ? '⚠️ antes de continuar, falta acertar:\n• ' + pr.join('\n• ') + (av.length ? '\n\nℹ️ ' + av.join('\nℹ️ ') : '')
+        : '✅ tudo pronto — pode continuar.' + (av.length ? '\n\nℹ️ ' + av.join('\nℹ️ ') : ''));
       return;
     }
 
@@ -1574,15 +1969,32 @@
           return;
         }
         state.faltaTarifa = false;
+      }
+
+      // 🔴 confere ANTES do POST 1: se já se sabe que vai dar errado, não gasta
+      // nem a seleção da tarifa. A divergência com a tela de reserva é refeita
+      // a cada tentativa (o POST 1 abaixo confere de novo).
+      state.divergencia = '';
+      state.ultimoBloqueio = null;
+      var antes = problemas();
+      if (antes.length) { bloquear(antes, 'antes do POST 1'); return; }
+
+      if (state.mode !== 'form') {
         // 🔴 NÃO chamar results.ashx aqui. Ele re-roda a busca na sessão e
         // invalida o optionID que estamos segurando — foi o que quebrou a
         // reserva em 15/08. A sequência boa é POST 1 e POST 2 colados, sem
         // nenhuma outra chamada no meio.
         log('POST 1 — selecionando a tarifa…');
-        if (!await loadFare()) return;
+        if (!await loadFare()) {
+          if (state.divergencia) state.ultimoBloqueio = [state.divergencia];
+          return;
+        }
+        // as linhas da tela de reserva podem ter mudado os pax: confere de novo
+        var depois = problemas();
+        if (depois.length) { bloquear(depois, 'depois do POST 1 — o POST 2 não foi'); return; }
       }
 
-      var w2 = warnings();
+      var w2 = avisos();
       state.paxes.forEach(applyPax);              // no-op no modo sem form
       var params;
       try { params = buildParams(state); }
@@ -1714,6 +2126,7 @@
         return;
       }
       state.catalog = cat;
+      state.dist = state.dist || cat[0].dist || null;
       if (!state.paxes.length && cat[0].dist) {
         state.paxes = paxesFromDistribution(cat[0].dist);
         state.fareLoaded = state.paxes.length > 0;
@@ -1752,8 +2165,13 @@
   log(state.mode === 'form'
     ? 'Formulário encontrado: ' + state.paxes.length + ' pax.'
     : state.mode === 'results'
-      ? 'Composição lida da barra de busca: ' + state.paxes.length + ' pax. ' +
-        'Escolha o hotel/tarifa, preencha os CPFs e clique em Reservar.'
+      ? 'Composição lida da barra de busca: ' + state.paxes.length + ' pax' +
+        (state.idadesBusca && state.idadesBusca.idades.length
+          ? (state.idadesBusca.conflito
+              ? ' — ⚠️ as fontes da página divergem nas idades das crianças; informe-as abaixo'
+              : ' — crianças com ' + txtIdades(state.idadesBusca.idades) + ' ano(s) (' + state.idadesBusca.fonte + ')')
+          : '') +
+        '. Escolha o hotel/tarifa, preencha os CPFs e clique em Continuar.'
       : 'Sem formulário nesta página — modo dois POSTs. ' +
         (state.refs ? 'Tarifa detectada, é só carregar.' : 'Escolha/cole a tarifa (UID + optionID).'));
 
@@ -1786,6 +2204,10 @@
     esconderTarjaCookies: esconderTarjaCookies,
     resumoPreset: resumoPreset,
     diagnostico: copiarDiagnostico,
+    problemas: problemas,
+    avisos: avisos,
+    lerComposicaoDaBusca: lerComposicaoDaBusca,
+    fonteUrl: fonteUrl,
     simular: function () { return handleClick('dry'); },
     reservar: function () { return handleClick('send'); },
     state: state, lookup: lookup, buildParams: function () { return buildParams(state); },
