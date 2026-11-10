@@ -125,7 +125,9 @@ teste('comId: criança digitada à mão, sem consulta, não vai no comId (caso r
   });
   await t.api.reservar();
   assert.strictEqual(t.post2().length, 1, t.log());
-  assert.strictEqual(comIdParam(t), '00000000001,00000000002');
+  // v1.6.4: no formato do site — um comId por linha do formulário, vazio inclusive
+  // (a v1.6.3 mandava só os preenchidos, '00000000001,00000000002')
+  assert.strictEqual(comIdParam(t), '00000000001,00000000002,,');
   const bp = t.bookingPaxes()[0].paxes;
   igual(bp.map((p) => p.comId), ['00000000001', '00000000002', '', '']);
   // o documento da criança continua indo no documentNumber

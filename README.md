@@ -36,8 +36,10 @@ de cupom.
    request do link "Validar CPF" do site — e preenche nome, sobrenome, data de
    nascimento e número TudoAzul quando existe cadastro.
 4. Ao confirmar, faz a mesma sequência de dois POSTs que o site faz: um para
-   selecionar a tarifa na sessão, outro (`action=book`) que cria a reserva e
-   navega para a tela de confirmação.
+   selecionar a tarifa na sessão (ele devolve o formulário de passageiros do
+   site), outro (`action=book`) que cria a reserva e navega para a tela de
+   confirmação. O segundo é montado **a partir desse formulário**, preenchido e
+   serializado do mesmo jeito que o site faz — os mesmos campos, linha por linha.
 
 Tudo roda na sua sessão logada, no seu navegador.
 
@@ -68,7 +70,13 @@ Gera `dist/azul-bookmarklet-v<versão>.html` (a página), o `.txt` com a URL
 
 Roda o painel numa página de resultados de mentira (jsdom + jQuery 1.12.4), com
 `fetch` simulado. Nenhuma requisição sai para o site. Cobre a leitura das idades
-das crianças, as travas do POST 2 e o build minificado de `docs/`.
+das crianças, as travas do POST 2, o POST 2 montado do formulário (fixture: o
+formulário real da booking.aspx, sem dado pessoal) e o build minificado de `docs/`.
+
+Se o JS do site estiver salvo localmente (`AZUL_SITE_JS=<dir>` com
+`consultas/2026-11-10-booking-criancas/js_bookingPaxes.min.js` e
+`spike/js_base.min.js`), o teste compara o POST 2 byte a byte com o serializer
+do próprio site. Sem os arquivos, essa comparação é pulada.
 
 A versão sai da constante `VERSION` no topo do script. Quem já instalou precisa
 **reinstalar o favorito** para receber uma versão nova — o código mora dentro do
