@@ -13,8 +13,11 @@
  *   2. você escolhe o hotel + a tarifa num dropdown agrupado por hotel;
  *   3. informa os CPFs — ele consulta o cadastro e preenche o que voltar;
  *   4. "Reservar" dispara os dois POSTs em sequência: POST 1 (UID +
- *      optionID) seleciona a tarifa na sessão, POST 2 (action=book) cria a
- *      reserva e navega para confirmBooking.aspx, onde fica o cupom.
+ *      optionID) seleciona a tarifa na sessão e devolve o formulário de
+ *      passageiros do site; POST 2 (action=book) sai DESSE formulário,
+ *      preenchido e serializado como o site faz (getPaxesInfo +
+ *      getFormParams), cria a reserva e navega para confirmBooking.aspx,
+ *      onde fica o cupom.
  *      Antes de cada um, problemas() confere: idade de cada criança igual à
  *      da busca (lida da barra, do seletor e da URL, conferidas entre si, e
  *      de novo contra a tela de reserva do POST 1), nascimento batendo com
@@ -35,7 +38,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.6.3';
+  var VERSION = '1.6.4';
   var KOFI = 'https://ko-fi.com/eduoct';
 
   // Só monta a UI no site certo. Fora daqui, sai sem tocar na página.
@@ -436,8 +439,116 @@
       tripDate: '', adultAgeFrom: 18, label: '', titles: TITLES_ADULT,
       ageIncerta: false,
       doc: '', docKind: 'cpf', name: '', surname: '', birthday: '',
-      treatment: '', ffp: '', comId: '', cpfFromFFP: '', status: 'pendente'
+      treatment: '', ffp: '', comId: '', cpfFromFFP: '', status: 'pendente',
+      // do formulário do site (POST 1 ou a booking.aspx aberta):
+      //   rowIndex — posição da linha; campos — nomes dos campos da linha;
+      //   extras — campos obrigatórios que o painel não cobre (ex.: pax-gender);
+      //   extra — o que a pessoa escolheu neles; info — o que a consulta do CPF devolveu
+      rowIndex: null, campos: null, extras: [], extra: {}, info: null, selectsPadrao: {}, tiposDoc: null
     }, o);
+  }
+
+  // ------------------------------------------------ formulário do site
+  // Campos da linha de passageiro que o painel preenche sozinho. O que não está
+  // aqui fica com o que o formulário do site trouxe — inclusive o padrão de cada
+  // <select> (tipo de documento, nacionalidade…), linha por linha.
+  var CAMPOS_DO_PAINEL = ['comId', 'pax-idTDC', 'pax-document-number', 'pax-tipo-socio',
+    'pax-numero-socio', 'pax-treatment', 'pax-name', 'pax-surname', 'pax-birthday'];
+  // o próprio JS do site preenche estes a partir do tipo de documento (ver efeitoDoTipoDeDocumento)
+  var SEL_CAMPOS_DO_TIPO_DOC = '.js-pax-document-expedition, .js-pax-passport-expiration';
+
+  // "escondido pelo site": dentro de .hidden/.invisible ou display:none — menos a
+  // linha de campos extras, que o site mostra depois da consulta do CPF
+  function escondidoPeloSite(el, $row) {
+    var n = el.parentNode;
+    while (n && n !== $row[0]) {
+      var cls = ' ' + (n.className || '') + ' ';
+      var extraRow = cls.indexOf(' booking-paxes__pax-fields-row--extra-fields ') > -1;
+      if (!extraRow && (/ (hidden|invisible) /.test(cls) ||
+          /display\s*:\s*none/i.test(n.getAttribute && n.getAttribute('style') || ''))) return true;
+      n = n.parentNode;
+    }
+    return false;
+  }
+
+  function rotuloDoCampo($el) {
+    var t = $el.closest('label').find('.booking-paxes__pax-field-label, .js-booking-paxes__pax-field-label').first().text() ||
+            $el.attr('placeholder') || $el.attr('name') || '';
+    return String(t).replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  // o que a linha do formulário tem, sem valor digitado nenhum: nomes dos campos,
+  // padrão de cada <select> e os obrigatórios que o painel não sabe preencher
+  function lerCamposDaLinha($row) {
+    var campos = [], extras = [], selects = {}, tiposDoc = null;
+    $row.find(':input[name]').each(function () {
+      var $e = $(this), nome = this.name;
+      if (campos.indexOf(nome) < 0) campos.push(nome);
+      if ($e.is('select')) selects[nome] = $e.val();
+      if (nome === 'pax-idTDC' && !tiposDoc) {
+        tiposDoc = $e.find('option').map(function () { return this.value; }).get();
+      }
+      if (CAMPOS_DO_PAINEL.indexOf(nome) > -1 || this.type === 'hidden' || this.disabled) return;
+      if ($e.closest(SEL_CAMPOS_DO_TIPO_DOC).length) return;
+      if (!$e.is('[required]') || escondidoPeloSite(this, $row)) return;
+      if (extras.some(function (x) { return x.name === nome; })) return;
+      extras.push({
+        name: nome, label: rotuloDoCampo($e) || nome,
+        tag: $e.is('select') ? 'select' : 'input',
+        options: $e.is('select') ? $e.find('option').map(function () {
+          return { value: this.value, text: $(this).text().trim() };
+        }).get() : null,
+        padrao: $e.val() || ''
+      });
+    });
+    return { campos: campos, extras: extras, selects: selects, tiposDoc: tiposDoc };
+  }
+
+  // o formulário do POST 1 em texto, para o 🩺: só nomes de campo, opções e
+  // padrões dos <select> que não são dado de ninguém. Nada digitado.
+  var SELECTS_NO_DIAG = ['pax-idTDC', 'pax-document-type', 'pax-tipo-socio', 'pax-nationality',
+    'pax-residence-country', 'pax-passport-country', 'pax-gender', 'pax-treatment'];
+  function descreverFormulario(rows, doc) {
+    var linhas = rows.map(function (p) {
+      var sel = SELECTS_NO_DIAG.filter(function (n) { return p.selectsPadrao && n in p.selectsPadrao; })
+        .map(function (n) {
+          var v = p.selectsPadrao[n];
+          return n.replace(/^pax-/, '') + '=' + (v == null ? '∅' : v === '' ? '""' : v) +
+                 (n === 'pax-idTDC' && p.tiposDoc ? '(' + p.tiposDoc.join('/') + ')' : '');
+        });
+      return (p.type === '0' ? 'A' : 'C') + (isNaN(p.age) ? '?' : p.age) + '[' +
+        (p.campos || []).map(function (n) { return n.replace(/^pax-/, ''); }).join(',') +
+        (sel.length ? ' · ' + sel.join(' ') : '') +
+        (p.extras && p.extras.length ? ' · obrigatórios extras: ' + p.extras.map(function (x) { return x.name; }).join(',') : '') +
+        ']';
+    });
+    var $bd = $(doc).find('.booking-data').first();
+    var escondidos = $bd.find('.booking-data__hidden-fields').map(function () {
+      return this.name || ('<' + this.tagName.toLowerCase() + '>');
+    }).get();
+    return linhas.join(' ') + ' · hidden-fields: ' + (escondidos.join(',') || '(nenhum)') +
+      ' · notes: ' + ($bd.find('[name=notes]').length ? 'sim' : 'não') +
+      ' · slider de pontos: ' + ($(doc).find('.points-slider__points-amount').length ? 'sim' : 'não');
+  }
+
+  // o que foi no POST 2, sem valor pessoal: chaves, tipo de documento, forma do comId
+  function resumoDoEnvio(params) {
+    var bp = [];
+    try { bp = JSON.parse(params.bookingPaxes); } catch (e) { return '(não li o bookingPaxes)'; }
+    var paxes = bp.map(function (r) {
+      return r.paxes.map(function (p) {
+        var chaves = Object.keys(p).filter(function (k) {
+          return p[k] !== '' && p[k] !== null && p[k] !== false && k !== 'paxType' && k !== 'paxAge' &&
+                 !(k === 'numberOfBags' && p[k] === 0);
+        });
+        return (p.paxType === 0 ? 'A' : 'C') + p.paxAge + '{' + chaves.map(function (k) {
+          return k === 'idTDC' || k === 'documentType' ? k + '=' + p[k] : k;
+        }).join(',') + '}';
+      }).join(' ');
+    }).join(' | ');
+    var com = params.comId == null ? 'sem comId' : 'comId ' + String(params.comId).split(',').length +
+      ' posição(ões), ' + String(params.comId).split(',').filter(Boolean).length + ' preenchida(s)';
+    return 'campos: ' + Object.keys(params).join(',') + ' · ' + com + ' · paxes: ' + paxes;
   }
 
   // lê as linhas de pax de um documento (a página atual ou o HTML do POST 1)
@@ -450,8 +561,14 @@
       var titles = $row.find('[name=pax-treatment] option').map(function () {
         return { value: this.value, text: $(this).text().trim() };
       }).get();
+      var lidos = lerCamposDaLinha($row);
       return newPax({
         $row: live ? $row : null,
+        rowIndex: i,
+        campos: lidos.campos,
+        extras: lidos.extras,
+        selectsPadrao: lidos.selects,
+        tiposDoc: lidos.tiposDoc,
         room: $row.closest('.booking-paxes__room').attr('data-roomnumber') || 1,
         type: type,
         typeLabel: TYPE_LABEL[type] || 'Pax',
@@ -718,11 +835,18 @@
       if (j < 0) return;
       usados[j] = true;
       var t = typed[j];
-      ['doc', 'docKind', 'name', 'surname', 'birthday', 'ffp', 'comId', 'cpfFromFFP', 'status']
+      ['doc', 'docKind', 'name', 'surname', 'birthday', 'ffp', 'comId', 'cpfFromFFP', 'status', 'info']
         .forEach(function (k) { if (t[k]) p[k] = t[k]; });
       if (t.treatment && p.titles.some(function (x) { return x.value === t.treatment; })) {
         p.treatment = t.treatment;
       }
+      // o que a pessoa escolheu nos campos extras volta, se a linha nova ainda tem o campo
+      Object.keys(t.extra || {}).forEach(function (k) {
+        var x = p.extras.filter(function (e) { return e.name === k; })[0];
+        if (!x) return;
+        if (x.options && !x.options.some(function (o) { return o.value === t.extra[k]; })) return;
+        p.extra[k] = t.extra[k];
+      });
     });
     return serverRows;
   }
@@ -1053,16 +1177,19 @@
     return '/hotels/booking.aspx?searchSessionID=' + encodeURIComponent(sid) + '&hashParams=' + hash;
   }
 
-  // POST 1: seleciona a tarifa na sessão e devolve o HTML da booking
+  // POST 1: seleciona a tarifa na sessão e devolve o HTML da booking (e a URL
+  // final: é nela que o site faz o POST 2, via urlChangeParams(location.href))
   async function selectFare(refs) {
-    var res = await fetch(bookingUrl(refs.UID), {
+    var url = bookingUrl(refs.UID);
+    var res = await fetch(url, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: 'UID=' + encodeURIComponent(refs.UID) + '&optionID=' + encodeURIComponent(refs.optionID)
     });
     if (!res.ok) throw new Error('POST 1 devolveu HTTP ' + res.status);
-    return await res.text();
+    var final = String(res.url || '');
+    return { html: await res.text(), url: /booking\.aspx/i.test(final) ? final.split('#')[0] : url };
   }
 
   // O POST 1 pode voltar: o formulário, o aviso de pontos (que é OK seguir),
@@ -1073,6 +1200,9 @@
 
     var txt = ($(doc).find('body').text() || '').replace(/\s+/g, ' ').toLowerCase();
     if (/desculpe-nos|erro inesperado|houve um erro/.test(txt)) return 'erro';
+    // 10/11/2026, tudoazul sem sessão: o POST 1 volta 200 com a caixa de login no
+    // lugar dos passageiros. O POST 2 aí só pode dar erro.
+    if (/necess[aá]rio realizar seu login/.test(txt)) return 'login';
 
     // Qualquer outra coisa segue como 'aviso': o objetivo aqui é barrar SÓ a
     // página de erro conhecida. Bloquear o que eu não reconheço já se mostrou
@@ -1087,36 +1217,99 @@
     return t || '';
   }
 
-  // ------------------------------------------ preenche o form real (modo A)
-  function applyPax(pax) {
-    if (!pax.$row) return;
-    var $row = pax.$row;
-    var $fields = $row.find('.js-booking-paxes-fields');
+  // ------------------------------------- preenche uma linha do formulário
+  // Serve para as duas formas: a booking.aspx aberta (modo form, `vivo`) e o
+  // formulário que o POST 1 devolveu (modo results, fora da página). Faz o que
+  // a pessoa faria no site: escolhe CPF, digita, "Validar CPF" (o que a consulta
+  // devolveu vai para os mesmos campos que o handler do site preenche), escolhe
+  // os campos extras. O que o painel não sabe fica com o padrão do formulário.
 
-    // 4 = CPF. O 2º argumento impede o handler do site de limpar o número.
-    $row.find('[name=pax-idTDC]').val('4').trigger('change', [true]);
+  // Valor, do handler `change` do [name=pax-idTDC] (bookingPaxes.min.js). Ele
+  // roda no carregamento da página para todas as linhas: com CPF (4), copia o
+  // data-cpf-date para os campos de expedição/validade (escondidos); com outro
+  // documento, limpa. Fora da página ninguém roda o handler — roda aqui.
+  function efeitoDoTipoDeDocumento($row, idTDC) {
+    var $o = $row.find('.js-pax-document-expedition'), $s = $row.find('.js-pax-passport-expiration');
+    var r = $o.find('input').data('cpf-date'), d = $s.find('input').data('cpf-date');
+    if (idTDC === '4') { $o.find('input').val(r); $s.find('input').val(d); }
+    else { $o.find('input').val(''); $s.find('input').val(''); }
+  }
+
+  // valor efetivo de um campo extra: o escolhido no painel, senão o padrão do formulário
+  function valorExtra(p, x) {
+    var v = p.extra && p.extra[x.name];
+    if (v != null && v !== '') return v;
+    // o que a consulta do CPF preenche no site (se o campo for um desses)
+    var info = p.status === 'ok' ? p.info : null;
+    if (info) {
+      var daConsulta = { 'pax-mail': info.Email, 'pax-phone': info.Mobile, 'pax-nationality': info.Nationality }[x.name];
+      if (daConsulta != null && daConsulta !== '') return daConsulta;
+    }
+    return x.padrao || '';
+  }
+
+  function preencherLinha($row, pax, vivo) {
+    var $fields = $row.find('.js-booking-paxes-fields');
+    if (!$fields.length) $fields = $row;
+
+    // 4 = CPF, se a linha oferece CPF. Senão fica o tipo que o formulário trouxe.
+    // O 2º argumento impede o handler do site de limpar o número.
+    var $tdc = $row.find('[name=pax-idTDC]');
+    if ($tdc.find('option[value="4"]').length) $tdc.val('4');
+    if (vivo) $tdc.trigger('change', [true]);
+    if ($tdc.length) efeitoDoTipoDeDocumento($row, String($tdc.val()));
 
     var docValue = pax.docKind === 'cpf' ? maskCPF(pax.doc) : (pax.cpfFromFFP || pax.doc);
     var $doc = $row.find('[name=pax-document-number]').val(docValue);
     if (docValue.indexOf('*') > -1) $doc.removeAttr('data-validate');
-    else $doc.attr('data-validate', '4');
+    else if (!$tdc.length || String($tdc.val()) === '4') $doc.attr('data-validate', '4');
 
-    $fields.find('.booking-paxes__pax-fields-row--extra-fields').show();
+    if (vivo) $fields.find('.booking-paxes__pax-fields-row--extra-fields').show();
 
-    if (pax.treatment) $row.find('[name=pax-treatment]').val(pax.treatment).trigger('change');
-    $row.find('[name=pax-name]').val(pax.name);
-    $row.find('[name=pax-surname]').val(pax.surname);
-    $row.find('[name=pax-birthday]').val(pax.birthday);
+    var $tr = $row.find('[name=pax-treatment]');
+    if (pax.treatment && $tr.find('option').filter(function () { return this.value === pax.treatment; }).length) {
+      $tr.val(pax.treatment);
+      if (vivo) $tr.trigger('change');
+    }
+    $row.find('[name=pax-name]').val(String(pax.name || '').toUpperCase());
+    $row.find('[name=pax-surname]').val(String(pax.surname || '').toUpperCase());
+    $row.find('[name=pax-birthday]').val(pax.birthday || '');
+
+    // "Validar CPF" com cadastro: o handler do site põe nestes campos o que a
+    // consulta devolveu (getHolderInfo.ashx), na mesma ordem
+    if (pax.status === 'ok' && pax.info) {
+      $fields.find('input[name=pax-mail]').val(pax.info.Email);
+      $fields.find('select[name=pax-nationality]').val(pax.info.Nationality);
+      $fields.find('input[name=pax-phone]').val(pax.info.Mobile);
+    }
     if (pax.ffp) {
-      $row.find('[name=pax-tipo-socio]').val('Tudo Azul');
+      var $ts = $row.find('[name=pax-tipo-socio]');
+      if ($ts.find('option[value="Tudo Azul"]').length || !$ts.is('select')) $ts.val('Tudo Azul');
       $row.find('[name=pax-numero-socio]').val(pax.ffp);
     }
-    $fields.find('input[name=comId]').val(pax.comId || '');
+    $row.find('input[name=comId]').val(comIdDe(pax));
+
+    // campos obrigatórios do formulário que o painel mostrou (ex.: pax-gender)
+    (pax.extras || []).forEach(function (x) {
+      var v = valorExtra(pax, x);
+      if (v === '') return;
+      var $e = $row.find('[name="' + x.name + '"]');
+      $e.val(v);
+      if (vivo) $e.trigger('change');
+    });
+  }
+
+  // modo form: a página aberta é a booking.aspx
+  function applyPax(pax) {
+    if (!pax.$row) return;
+    preencherLinha(pax.$row, pax, true);
   }
 
   // ------------------------------------------------- bookingPaxes (payload)
-  // Mesma forma do payload que passou no teste de 13/08 (v3): só os campos que
-  // o motor usa, idade real na data do check-in e nome em maiúsculas.
+  // 🔴 Desde a v1.6.4 o POST 2 sai do formulário que o POST 1 devolveu
+  // (buildParams). paxFromModel sobrou só para o POST 1 que volta SEM
+  // formulário ("pontos insuficientes"): a forma do payload que passou em 13/08
+  // (v3), só os campos que o motor usa e nome em maiúsculas.
   // comId = "este CPF é cliente Azul cadastrado". O formulário do site só preenche
   // o campo depois que a consulta do CPF confirma o cadastro. Mandar o CPF de quem
   // não tem cadastro (criança pequena, digitada à mão) derruba o POST 2 com HTTP 500
@@ -1169,54 +1362,189 @@
     };
   }
 
-  function buildPaxesInfo(state) {
-    if (state.mode === 'form') {
-      // caminho preferido: o serializer do próprio site
-      try {
-        var native = window.$jbe && $jbe.bookingPaxes &&
-                     $jbe.bookingPaxes.getPaxesInfo($('.booking-data').find('.booking-paxes'));
-        if (native && native.length) return native;
-      } catch (e) { /* cai no builder próprio */ }
+  // ── serializer do site ──
+  // Cópia fiel de $jbe.bookingPaxes.getPaxesInfo (include/ctlBookingPaxes/js/
+  // bookingPaxes.min.js, versão servida em 10/11/2026 — a de agosto não tinha
+  // `gender`), sem o validate() do começo: quem barra aqui é problemas().
+  // 🔴 Lê o que o FORMULÁRIO tem, linha por linha: campo que não existe na linha
+  // vira `undefined` e não vai no JSON, campo que existe vai com o valor dele
+  // (inclusive o padrão de cada <select>). É exatamente o que o site manda.
+  // Na booking.aspx aberta, usa o do próprio site ($jbe.bookingPaxes) quando ele valida.
+  function PaxDoSite() {
+    this.paxType = ''; this.paxAge = ''; this.treatment = ''; this.name = '';
+    this.surname = ''; this.birthday = ''; this.nationality = ''; this.gender = ''; this.residenceCountry = '';
+    this.city = ''; this.zipCode = ''; this.phone = ''; this.mail = ''; this.address = '';
+    this.idTDC = ''; this.documentType = ''; this.documentNumber = ''; this.documentExpiration = '';
+    this.documentExpedition = ''; this.resident = false; this.passportCountry = '';
+    this.passportExpiration = ''; this.residentCity = ''; this.fidelityProgram = ''; this.baggage = '';
+    this.VISA = ''; this.CUIT = ''; this.tipoSocio = ''; this.numeroSocio = '';
+  }
+
+  function serializarPaxesComoSite($bookingPaxes) {
+    return $bookingPaxes.find('.booking-paxes__room').map(function (_, room) {
+      var quarto = {}, $room = $(room), $paxes = $room.find('.booking-paxes__pax');
+      quarto.numHab = $room.data('roomnumber');
+      quarto.paxes = $paxes.map(function (_, el) {
+        var i = new PaxDoSite(), t = $(el), fid = '';
+        $.each(t.find('.booking-paxes__fidelity-programs'), function (_, n) {
+          var $n = $(n), cia = $n.data('airline'),
+              prog = $n.find('[name=pax-fidelity-program]').val(),
+              num = $n.find('[name=pax-fidelity-number]').val();
+          if (num) fid += cia + ',' + prog + ',' + num + '¬';
+        });
+        i.paxType = t.data('pax-type');
+        i.paxAge = t.data('pax-age');
+        i.treatment = t.find('[name=pax-treatment]').val();
+        i.name = t.find('[name=pax-name]').val();
+        i.surname = t.find('[name=pax-surname]').val();
+        i.birthday = t.find('[name=pax-birthday]').val();
+        i.nationality = t.find('[name=pax-nationality]').val();
+        i.gender = t.find('[name=pax-gender]').val();
+        i.residenceCountry = t.find('[name=pax-residence-country]').val();
+        i.city = t.find('[name=pax-city]').val();
+        i.zipCode = t.find('[name=pax-zip-code]').val();
+        i.phone = t.find('[name=pax-phone]').val();
+        i.mail = t.find('[name=pax-mail]').val();
+        i.address = t.find('[name=pax-address]').val();
+        i.idTDC = t.find('[name=pax-idTDC]').val();
+        i.documentType = t.find('[name=pax-document-type]').val();
+        i.documentNumber = t.find('[name=pax-document-number]').val();
+        i.documentExpiration = t.find('[name=pax-document-expiration]').val();
+        i.passportExpiration = t.find('[name=pax-passport-expiration]').val();
+        i.passportCountry = t.find('[name=pax-passport-country]').val();
+        i.residentCity = t.find('[name=pax-resident-city]').val();
+        i.documentExpedition = t.find('[name=pax-document-expedition]').val();
+        i.flightNumber = t.find('[name=flightNumber]').val();
+        i.fidelityProgram = fid;
+        i.tipoSocio = t.find('[name=pax-tipo-socio]').val();
+        i.numeroSocio = t.find('[name=pax-numero-socio]').val();
+        i.comId = t.find('[name=comId]').val();
+        var bags = 0, sel = '';
+        $.each(t.find('[name=pax-baggage]'), function (_, n) {
+          sel += '#' + $(n).closest('.js-flight-baggage').data('baggage-id');
+          var $o = $(n).find('option:selected');
+          if ($o.length) { bags = Math.max($o.data('number'), bags); sel += ',' + $o.val(); }
+        });
+        i.numberOfBags = bags;
+        i.baggageSelection = sel;
+        i.VISA = t.find('[name=pax-visa]').val();
+        i.CUIT = t.find('[name=pax-cuit]').val();
+        return i;
+      }).get();
+      return quarto;
+    }).get();
+  }
+
+  // Cópia fiel de $jbe.getFormParams (base.min.js) — usada só se a página não
+  // tiver a do site. 🔴 Junta campos de mesmo nome com vírgula, NA ORDEM e COM OS
+  // VAZIOS: os `comId` das linhas viram "cpf1,cpf2,cpf3," (a 4ª sem cadastro).
+  function getFormParamsComoSite($t, opts) {
+    var n = {}, $i = $t.filter(':input, .date-selector').add($t.find(':input, .date-selector'));
+    opts = opts || {};
+    $i.each(function () {
+      var t = $(this), r, nome;
+      if (opts.ignoreDisabled && (t.is(':disabled') || t.closest('.disabled').length > 0)) return;
+      if (t.is(':input[name]')) {
+        if (t.is("input[type='checkbox']")) { if (t.is(':checked')) r = true; }
+        else if (t.is("input[type='radio']")) { if (t.is(':checked')) r = t.val(); }
+        else if (t.is('select')) r = t.val() || t.data('selected-value');
+        else if (t.is('input[data-mask][data-mask-type=numeric]')) r = parseFloat(t.val().replace(/,/g, ''));
+        else r = t.val();
+        if (r != null) {
+          nome = t.attr('name');
+          r = n[nome] != null ? n[nome] + ',' + r : r;
+          if ($.isArray(r)) r = r.join();
+          n[nome] = r;
+        }
+      }
+      // .date-selector / .zone-selector com data-param-name não existem na tela de passageiros
+    });
+    return n;
+  }
+
+  function formParamsDoSite($t) {
+    if (window.$jbe && typeof $jbe.getFormParams === 'function') {
+      try { return $jbe.getFormParams($t); } catch (e) { /* cai na cópia */ }
     }
+    return getFormParamsComoSite($t);
+  }
+
+  // Booking1.getParams + o final do addToBasket (Booking1Class.min.js): o POST 2
+  // do site é bookingPaxes + notes + pointsAmount + os campos escondidos do
+  // booking-data (os comId) + action/optionID/UID, e some com o que for vazio.
+  function paramsComoSite($bd, $doc, paxesInfo, refs) {
+    var t = {}, n;
+    t.bookingPaxes = JSON.stringify(paxesInfo);
+    t.notes = $bd.find('[name=notes]').val() || null;
+    var $slider = $doc.find('.points-slider__points-amount');
+    if ($slider.length && $slider.val() !== undefined) {
+      n = parseInt(String($slider.val()).replace(/\D/g, ''), 10);
+      if (n === 0) n = '0';
+    }
+    t.pointsAmount = n;
+    $.extend(t, formParamsDoSite($bd.find('.booking-data__hidden-fields')));
+    t.action = 'book';
+    t.optionID = refs.optionID || '';
+    t.UID = refs.UID || '';
+    $.each(t, function (k, v) {
+      // mesma regra do site: (null != t && "" != t) || delete — comparação frouxa de propósito
+      if (!(v != null && '' != v)) delete t[k];
+    });
+    return t;
+  }
+
+  // linha do formulário ↔ pax do painel: pela posição em que readPaxRows leu
+  function paxDaLinha(i) {
+    var achou = state.paxes.filter(function (p) { return p.rowIndex === i; });
+    return achou[0] || state.paxes[i];
+  }
+
+  // ── o POST 2 ──
+  //   modo form     → preenche a booking.aspx aberta e usa o serializer DELA
+  //   modo results  → preenche o formulário que o POST 1 devolveu (fora da página)
+  //                   e serializa com a cópia do serializer do site
+  //   POST 1 sem formulário ("pontos insuficientes") → builder próprio, como antes
+  function buildParams(state) {
+    if (!state.refs) throw new Error('UID/optionID não encontrados — informe a tarifa no painel.');
+    var $bd, $doc, info = null;
+
+    if (state.mode === 'form') {
+      $doc = $(document);
+      $bd = $('.booking-data');
+      try {
+        info = window.$jbe && $jbe.bookingPaxes && $jbe.bookingPaxes.getPaxesInfo($bd.find('.booking-paxes'));
+      } catch (e) { info = null; }
+      if (!info || !info.length) info = serializarPaxesComoSite($bd.find('.booking-paxes'));
+      state.ultimoBuilder = 'formulário da página';
+      return paramsComoSite($bd, $doc, info, state.refs);
+    }
+
+    if (state.post1 && state.post1.doc) {
+      $doc = $(state.post1.doc);
+      $bd = $doc.find('.booking-data').first();
+      var $rows = $bd.find('.js-booking-paxes-pax-row');
+      if ($rows.length && $rows.length === state.paxes.length) {
+        $rows.each(function (i) { preencherLinha($(this), paxDaLinha(i), false); });
+        info = serializarPaxesComoSite($bd.find('.booking-paxes'));
+        state.ultimoBuilder = 'formulário do POST 1';
+        return paramsComoSite($bd, $doc, info, state.refs);
+      }
+    }
+
+    // sem formulário: o builder próprio de sempre, com o comId no formato do site
     var rooms = [], byRoom = {};
     state.paxes.forEach(function (p) {
       var k = String(p.room);
       if (!byRoom[k]) { byRoom[k] = { numHab: parseInt(k, 10) || 1, paxes: [] }; rooms.push(byRoom[k]); }
       byRoom[k].paxes.push(paxFromModel(p));
     });
-    return rooms;
-  }
-
-  function buildParams(state) {
-    if (!state.refs) throw new Error('UID/optionID não encontrados — informe a tarifa no painel.');
-
-    var params = {
-      bookingPaxes: JSON.stringify(buildPaxesInfo(state)),
-      action: 'book',
-      optionID: state.refs.optionID,
-      UID: state.refs.UID
-    };
-
-    var comIds = state.paxes.map(comIdDe)
-                            .filter(Boolean).join(',');
-    if (comIds) params.comId = comIds;
-
-    if (state.mode === 'form') {
-      params.notes = $('[name=notes]').val() || null;
-      var $slider = $('.points-slider__points-amount');
-      if ($slider.length && $slider.val() !== undefined) {
-        var n = parseInt(String($slider.val()).replace(/\D/g, ''), 10);
-        params.pointsAmount = (n === 0 || isNaN(n)) ? '0' : n;
-      }
-      if (window.$jbe && $jbe.getFormParams) {
-        $.extend(params, $jbe.getFormParams($('.booking-data').find('.booking-data__hidden-fields')));
-        params.action = 'book';
-        params.optionID = state.refs.optionID;
-        params.UID = state.refs.UID;
-        if (comIds) params.comId = comIds;
-      }
-    }
-
+    state.ultimoBuilder = 'builder próprio (POST 1 sem formulário)';
+    var params = { bookingPaxes: JSON.stringify(rooms), action: 'book',
+                   optionID: state.refs.optionID, UID: state.refs.UID };
+    // comId: um por passageiro, na ordem, vazio para quem não tem — o que o
+    // getFormParams do site junta das linhas (antes ia só a lista dos preenchidos)
+    var comIds = state.paxes.map(comIdDe);
+    if (comIds.some(Boolean)) params.comId = comIds.join(',');
     $.each(params, function (k, v) {
       if (v === null || v === undefined || v === '') delete params[k];
     });
@@ -1231,7 +1559,7 @@
   async function submitBooking(state, params) {
     var url = state.mode === 'form'
       ? (window.urlChangeParams ? urlChangeParams(window.location.href) : window.location.href)
-      : bookingUrl(state.refs.UID);
+      : ((state.post1 && state.post1.url) || bookingUrl(state.refs.UID));
 
     // o que foi no POST 2, para o diagnóstico (só tipo e idade, nada pessoal)
     try {
@@ -1239,6 +1567,7 @@
         return r.paxes.map(function (p) { return (p.paxType === 0 ? 'A' : 'C') + p.paxAge; }).join(',');
       }).join(' | ');
     } catch (e) { state.ultimoEnvio = '(não li o bookingPaxes)'; }
+    state.ultimoEnvioCampos = resumoDoEnvio(params);
 
     if (state.mode === 'form' && window.sendPost) { window.sendPost(url, params); return; }
 
@@ -1303,7 +1632,8 @@
                hoteisCompletos: {}, carregandoHotel: null, bloqueado: null,
                manual: { rooms: '1', adults: '', children: '' },
                idadesBusca: null, idadesServidor: null, dist: null, consultando: 0,
-               divergencia: '', ultimoBloqueio: null, ultimoEnvio: '' };
+               divergencia: '', ultimoBloqueio: null, ultimoEnvio: '',
+               post1: null, formServidor: '', ultimoBuilder: '', ultimoEnvioCampos: '' };
 
   // check-in e composição do motor já na abertura (memória do site, 0
   // requisições): o padrão salvo casa cada criança pela idade no check-in
@@ -1316,6 +1646,7 @@
   if (domRows.length) {
     state.mode = 'form';
     state.paxes = hydrate(domRows);
+    state.formServidor = descreverFormulario(domRows, document);
     state.fareLoaded = true;
   } else {
     var barra = readSearchBarPaxes();
@@ -1514,6 +1845,7 @@
           '</select>' +
           '<input data-f="ffp" data-i="' + i + '" value="' + esc(p.ffp) + '" placeholder="nº TudoAzul" style="' + css + '">' +
         '</div>' +
+        extrasBlock(p, i) +
         (p.ageIncerta
           ? '<div style="display:flex;gap:4px;align-items:center">' +
               '<span style="color:#ecc94b;font-size:11px;flex:1">idade usada na busca (anos, a mesma da pesquisa):</span>' +
@@ -1531,6 +1863,25 @@
       '<button data-act="clear-preset" title="apagar o padrão salvo deste navegador" ' +
               'style="' + btn + ';background:#742a2a;flex:0 0 auto;padding:8px 12px">\uD83D\uDDD1\uFE0F Apagar</button>' +
     '</div>';
+  }
+
+  // campos obrigatórios que o formulário do site tem nesta linha e o painel não
+  // cobre (ex.: sexo). Opções e rótulo vêm do próprio formulário.
+  function extrasBlock(p, i) {
+    if (!p.extras || !p.extras.length) return '';
+    return p.extras.map(function (x) {
+      var v = valorExtra(p, x);
+      var campo = x.tag === 'select'
+        ? '<select data-f="x" data-n="' + esc(x.name) + '" data-i="' + i + '" style="' + css + '">' +
+            x.options.map(function (o) {
+              return '<option value="' + esc(o.value) + '"' + (o.value === v ? ' selected' : '') + '>' + esc(o.text || o.value) + '</option>';
+            }).join('') +
+          '</select>'
+        : '<input data-f="x" data-n="' + esc(x.name) + '" data-i="' + i + '" value="' + esc(v) + '" style="' + css + '">';
+      return '<div style="display:flex;gap:4px;align-items:center">' +
+        '<span style="color:' + (v === '' ? '#ecc94b' : '#9aa7b8') + ';font-size:11px;width:120px" title="campo do formulário do site: ' +
+          esc(x.name) + '">' + esc(x.label) + ' *</span>' + campo + '</div>';
+    }).join('');
   }
 
   function header() {
@@ -1645,7 +1996,10 @@
       'tela de reserva (POST 1): ' + (state.idadesServidor
         ? 'crianças ' + txtIdades(state.idadesServidor) + ' · linhas tipo/idade/data: ' + (state.linhasServidor || '?')
         : '—'),
+      'formulário do POST 1: ' + (state.formServidor || '—'),
       'POST 2 enviado com: ' + (state.ultimoEnvio || '—'),
+      'POST 2 montado por: ' + (state.ultimoBuilder || '—') +
+        (state.ultimoEnvioCampos ? ' · ' + state.ultimoEnvioCampos : ''),
       'checagem antes do POST 2: ' + (state.ultimoBloqueio
         ? 'BLOQUEADO — ' + state.ultimoBloqueio.join(' | ')
         : (state.ultimoEnvio ? 'ok' : 'ainda não rodou')),
@@ -1682,9 +2036,12 @@
       p.ffp = d.identifierNoFFP || p.ffp;
       p.comId = digits(p.doc);
       if (p.docKind === 'ffp') p.cpfFromFFP = d.identifierNoCPF || '';
+      // o handler do "Validar CPF" do site também põe isto no formulário (preencherLinha)
+      p.info = { Email: d.Email, Mobile: d.Mobile, Nationality: d.Nationality };
       p.status = 'ok';
     } catch (err) {
       p.comId = '';
+      p.info = null;
       p.status = /sem cadastro/.test(err.message) ? 'manual' : 'erro';
       log('[' + p.label + '] ' + err.message +
           (p.status === 'manual' ? ' — preencha os campos à mão'
@@ -1729,8 +2086,15 @@
       if (p.status === 'erro') {
         out.push(nome + ': a consulta do CPF falhou — clique 🔍 de novo; sem cadastro, preencha à mão');
       }
-      if (!digits(p.doc)) out.push(nome + ': falta o documento');
+      // documento: só se a linha do formulário do site tem o campo (sem formulário lido, sempre)
+      var pedeDoc = !p.campos || p.campos.indexOf('pax-document-number') > -1;
+      if (pedeDoc && !digits(p.doc)) out.push(nome + ': falta o documento');
       if (!String(p.name || '').trim() || !String(p.surname || '').trim()) out.push(nome + ': falta nome/sobrenome');
+      (p.extras || []).forEach(function (x) {
+        if (valorExtra(p, x) === '') {
+          out.push(nome + ': o formulário do site pede "' + x.label + '" — escolha/preencha no painel');
+        }
+      });
       if (!parseBR(p.birthday)) { out.push(nome + ': nascimento vazio ou inválido (dd/mm/aaaa)'); return; }
 
       var ref = p.tripDate || state.checkin;
@@ -1755,6 +2119,10 @@
       if (parseBR(p.birthday) && !parseBR(p.tripDate || state.checkin)) {
         w.push((p.label || p.typeLabel) + ': não sei a data do check-in — não deu para conferir a idade pelo nascimento');
       }
+      if (p.tiposDoc && p.tiposDoc.indexOf('4') < 0 && digits(p.doc)) {
+        w.push((p.label || p.typeLabel) + ': o formulário do site não oferece CPF nesta linha — vai o tipo de documento padrão dele (' +
+               (p.selectsPadrao['pax-idTDC'] || '?') + ')');
+      }
     });
     return w;
   }
@@ -1776,12 +2144,24 @@
       return false;
     }
     log('POST 1 — selecionando a tarifa…');
+    state.post1 = null;
     try {
-      var html = await selectFare(state.refs);
+      var r1 = await selectFare(state.refs);
+      var html = r1.html;
+      // 🔴 O formulário que o POST 1 devolve é guardado: o POST 2 sai DELE, linha
+      // por linha, como o site faria (buildParams). DOMParser: nada roda, nada carrega.
       var doc = new DOMParser().parseFromString(html, 'text/html');
       var tipo = classifyBooking(doc, html);
       var rows = readPaxRows(doc, false);
       var aviso = warningFromHtml(doc);
+
+      if (tipo === 'login') {
+        log('❌ O site pediu login na tela de reserva ("É necessário realizar seu Login para seguir com a reserva").\n' +
+            'Sem login o TudoAzul não mostra os passageiros nem aceita a reserva.\n\n' +
+            'Faça login no site, refaça a busca e abra o painel de novo.\n' +
+            'NÃO mandei o POST 2.');
+        return false;
+      }
 
       if (tipo === 'erro') {
         log('❌ O POST 1 voltou a página de erro do site ("Desculpe-nos, houve um erro").\n' +
@@ -1842,6 +2222,9 @@
       hydrate(rows);
       rows.forEach(function (p, i) { if (!p.doc) p.doc = PRESET_DOCS[i] || ''; });
       state.paxes = rows;
+      state.post1 = { doc: doc, url: r1.url };
+      // o que o formulário tem por linha, para o diagnóstico (só nomes e padrões de <select>)
+      state.formServidor = descreverFormulario(rows, doc);
       state.fareLoaded = true;
       render();
       if (aviso) log('ℹ️ a página respondeu: "' + aviso + '" — é só render, o POST 2 segue.');
@@ -1863,6 +2246,7 @@
     if (f.indexOf('m-') === 0) { state.manual[f.slice(2)] = e.target.value; return; }
     var p = state.paxes[+e.target.getAttribute('data-i')];
     if (!p) return;
+    if (f === 'x') { p.extra[e.target.getAttribute('data-n')] = e.target.value; return; }
     if (f === 'birthday') {
       var raw = e.target.value;
       if (podeMascarar(raw)) {
@@ -1930,6 +2314,7 @@
     if (f === 'uid' || f === 'optionid') return;
     var p = state.paxes[+e.target.getAttribute('data-i')];
     if (!p) return;
+    if (f === 'x') { p.extra[e.target.getAttribute('data-n')] = e.target.value; render(); return; }
     p[f] = f === 'age' ? idadeOuNull(e.target.value) : e.target.value;
     if (f === 'age' && recasarCriancasDoPadrao()) render();
   });
@@ -2225,6 +2610,8 @@
     simular: function () { return handleClick('dry'); },
     reservar: function () { return handleClick('send'); },
     state: state, lookup: lookup, buildParams: function () { return buildParams(state); },
+    serializarPaxesComoSite: serializarPaxesComoSite, getFormParamsComoSite: getFormParamsComoSite,
+    preencherLinha: preencherLinha, readPaxRows: readPaxRows, classifyBooking: classifyBooking,
     apply: function () { state.paxes.forEach(applyPax); },
     detectRefs: detectRefs, listResultOptions: listResultOptions, loadFare: loadFare
   };

@@ -1,12 +1,12 @@
 {
   "name": "reserva-tudoazul",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "private": true,
   "description": "Bookmarklet de resgate de hotéis TudoAzul / Azul Viagens",
   "license": "MIT",
   "scripts": {
     "build": "node build_bookmarklet.js",
-    "test": "node test/test_idades.js"
+    "test": "node test/test_idades.js && node test/test_post2_formulario.js"
   },
   "devDependencies": {
     "jquery": "1.12.4",

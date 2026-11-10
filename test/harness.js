@@ -31,7 +31,8 @@ const SRC_ATUAL = fs.readFileSync(path.join(__dirname, '..', 'src', 'azul_paxes_
 
 // pessoas sintéticas — nascimento pensado para o check-in de 18/12/2026
 const PESSOAS = {
-  '00000000001': { Name: 'TESTE', LastName: 'ADULTO UM', BirthDate: '01/01/1980', identifierNoFFP: '' },
+  '00000000001': { Name: 'TESTE', LastName: 'ADULTO UM', BirthDate: '01/01/1980', identifierNoFFP: '',
+                   Email: 'teste.um@example.invalid', Mobile: '11900000001', Nationality: 'BR' },
   '00000000002': { Name: 'TESTE', LastName: 'ADULTO DOIS', BirthDate: '02/02/1982', identifierNoFFP: '' },
   '00000000003': { Name: 'TESTE', LastName: 'CRIANCA SETE', BirthDate: '10/05/2019', identifierNoFFP: '' },   // 7 no check-in
   '00000000004': { Name: 'TESTE', LastName: 'CRIANCA QUATRO', BirthDate: '03/03/2022', identifierNoFFP: '' }, // 4 no check-in
@@ -73,20 +74,37 @@ function roomSelectorHtml(o) {
   </div>`;
 }
 
-// linhas da tela de reserva (booking.aspx) no formato do bk_booking_www_post.html
-function bookingHtml(idades, tripDate) {
-  const linha = (n, tipo, idade, rot) =>
-    `<div class="booking-paxes__pax js-booking-paxes-pax-row" data-pax-row="${n}" data-pax-type="${tipo}" ` +
-    `data-pax-age="${idade}" data-pax-maxage="" data-pax-tripdate="${tripDate}" data-pax-adultagefrom="18">` +
-    `<span class="booking-paxes__pax-type">${rot}</span>` +
-    `<select name="pax-treatment">${tipo === 0
-      ? '<option value="MR">Sr.</option><option value="MRS">Sra.</option>'
-      : '<option value="MSTR">Criança (M)</option><option value="MISS">Criança (F)</option>'}</select></div>`;
-  let h = linha(1, 0, 30, 'Adulto 1') + linha(2, 0, 30, 'Adulto 2');
-  idades.forEach((a, i) => { h += linha(3 + i, 1, a, 'Criança ' + (i + 1)); });
-  return `<html><body><div class="booking-data"><div class="booking-paxes">` +
-         `<div class="booking-paxes__room" data-roomnumber="1">${h}</div></div></div></body></html>`;
+// Tela de reserva (booking.aspx) que o POST 1 devolve. Base REAL: o bloco de
+// passageiros da booking.aspx do www de 13/08/2026 (fixtures/booking_form_www_2a.html,
+// 2 adultos). As linhas de criança são cópia da linha de adulto com tipo/idade/
+// títulos de criança — 🔴 sintéticas: o formulário real com criança só aparece
+// logado (no tudoazul o POST 1 sem login devolve a caixa de login).
+// `ajuste(linha, {tipo, idade, doc})` mexe numa linha (cenários hipotéticos).
+const FORM_REAL = fs.readFileSync(path.join(FIX, 'booking_form_www_2a.html'), 'utf8');
+function bookingHtml(idades, tripDate, ajuste) {
+  const doc = new JSDOM('<!doctype html><html><body>' + FORM_REAL + '</body></html>').window.document;
+  const room = doc.querySelector('.booking-paxes__room');
+  const modelo = room.querySelector('.js-booking-paxes-pax-row');
+  room.querySelectorAll('.js-booking-paxes-pax-row').forEach((r) => r.remove());
+  const paxes = [[0, 30, 'Adulto 1'], [0, 30, 'Adulto 2']]
+    .concat(idades.map((a, i) => [1, a, 'Criança ' + (i + 1)]));
+  paxes.forEach(([tipo, idade, rot], i) => {
+    const r = modelo.cloneNode(true);
+    r.setAttribute('data-pax-row', String(i + 1));
+    r.setAttribute('data-pax-type', String(tipo));
+    r.setAttribute('data-pax-age', String(idade));
+    r.setAttribute('data-pax-tripdate', tripDate);
+    r.querySelector('.booking-paxes__pax-type').textContent = rot;
+    if (tipo !== 0) {
+      r.querySelector('[name=pax-treatment]').innerHTML =
+        '<option value="MSTR">Criança (M)</option><option value="MISS">Criança (F)</option>';
+    }
+    if (ajuste) ajuste(r, { tipo, idade, doc });
+    room.appendChild(r);
+  });
+  return '<html><body>' + doc.querySelector('.booking-data').outerHTML + '</body></html>';
 }
+const LOGIN_HTML = fs.readFileSync(path.join(FIX, 'booking_login_tudoazul.html'), 'utf8');
 
 const ERRO_HTML = '<html><body><h1>Desculpe-nos, houve um erro</h1></body></html>';
 
@@ -96,20 +114,27 @@ const ERRO_HTML = '<html><body><h1>Desculpe-nos, houve um erro</h1></body></html
  *   o.plugin        função val() falsa para $.fn.roomSelector
  *   o.preset        padrão salvo (localStorage)
  *   o.post1Idades   idades das crianças na tela de reserva (null = sem formulário)
+ *   o.post1Ajuste   função(linha, info) que mexe nas linhas do formulário do POST 1
+ *   o.post1Login    POST 1 devolve a caixa de login (tudoazul sem sessão)
  *   o.post2         'ok' | 'erro'
  *   o.lookup        { cpf: 'ok' | 'erro' | 'demora' }
  *   o.url           URL da página
  *   o.src           fonte do script (default: o atual)
+ *   o.paginaBooking  a página aberta é a booking.aspx com o formulário (modo form);
+ *                   window.sendPost é trocado por um gravador (t.enviosForm)
  */
 function montar(o) {
   o = o || {};
   const fx = fixture('www_taua_cache_item.json');
   const opcoes = fx.item.availability.options.map((x) =>
     `<div class="result-option" data-option-id="${x.ID}"></div>`).join('');
-  const html = `<!doctype html><html><head></head><body>
-    <div id="header">${(o.barras || []).map(roomSelectorHtml).join('\n')}</div>
+  const corpo = o.paginaBooking
+    ? bookingHtml(o.post1Idades || [7, 4], '18/12/2026', o.post1Ajuste).replace(/^<html><body>|<\/body><\/html>$/g, '')
+    : `<div id="header">${(o.barras || []).map(roomSelectorHtml).join('\n')}</div>
     <div class="search-summary__paxes">1 Apartamentos 4 Hóspedes</div>
-    <div class="results-list"><div class="result" data-uid="${fx.uid}">${opcoes}</div></div>
+    <div class="results-list"><div class="result" data-uid="${fx.uid}">${opcoes}</div></div>`;
+  const html = `<!doctype html><html><head></head><body>
+    ${corpo}
   </body></html>`;
 
   const logs = [];
@@ -120,7 +145,9 @@ function montar(o) {
   vc.on('jsdomError', () => {});                 // navegação (location.href = …) não existe no jsdom
 
   const dom = new JSDOM(html, {
-    url: o.url || 'https://www.azulviagens.com.br/hotels/results.aspx?searchSessionID=705907',
+    url: o.url || (o.paginaBooking
+      ? 'https://www.azulviagens.com.br/hotels/booking.aspx?searchSessionID=705907&hashParams=x'
+      : 'https://www.azulviagens.com.br/hotels/results.aspx?searchSessionID=705907'),
     runScripts: 'outside-only',
     pretendToBeVisual: true,
     virtualConsole: vc
@@ -153,6 +180,14 @@ function montar(o) {
       filters: {}
     }
   };
+  if (o.paginaBooking) {
+    const op = fx.item.availability.options[0];
+    w.$jbe.booking1 = { options: { data: { UID: fx.uid, optionID: op.ID } } };
+  }
+  const enviosForm = [];
+  if (o.paginaBooking) {
+    w.sendPost = (url, params) => enviosForm.push({ url, params: JSON.parse(JSON.stringify(params)) });
+  }
   if (o.preset) w.localStorage.setItem('azulPaxPreset.v1', JSON.stringify(o.preset));
 
   const chamadas = [];
@@ -179,8 +214,9 @@ function montar(o) {
       return resp(200, JSON.stringify(p || { ErrorData: 'x' }));
     }
     if (u.indexOf('/hotels/booking.aspx') > -1 && body.indexOf('action=book') < 0) {
+      if (o.post1Login) return resp(200, LOGIN_HTML);
       if (o.post1Idades === null) return resp(200, '<html><body><div class="booking-warning__content">Pontos insuficientes</div></body></html>');
-      return resp(200, bookingHtml(o.post1Idades || [7, 4], '18/12/2026'));
+      return resp(200, bookingHtml(o.post1Idades || [7, 4], '18/12/2026', o.post1Ajuste));
     }
     if (u.indexOf('/hotels/booking.aspx') > -1) {
       if (o.post2 === 'erro') return resp(500, ERRO_HTML);
@@ -194,7 +230,7 @@ function montar(o) {
   const api = w.__azulPax;
   const panel = w.document.getElementById('azul-pax-panel');
   return {
-    w, api, chamadas, alertas, logs, panel,
+    w, api, chamadas, alertas, logs, panel, enviosForm,
     log: () => (panel.querySelector('#azul-pax-log') || {}).textContent || '',
     post1: () => chamadas.filter((c) => c.url.indexOf('booking.aspx') > -1 && c.body.indexOf('action=book') < 0),
     post2: () => chamadas.filter((c) => c.url.indexOf('booking.aspx') > -1 && c.body.indexOf('action=book') > -1),
@@ -203,6 +239,17 @@ function montar(o) {
       if (!p2) return null;
       const m = /(?:^|&)bookingPaxes=([^&]*)/.exec(p2.body);
       return JSON.parse(decodeURIComponent(m[1]));
+    },
+    // corpo do POST 2 como objeto (chave → valor), na ordem em que foi
+    post2Params: function () {
+      const p2 = this.post2()[0];
+      if (!p2) return null;
+      const out = {};
+      p2.body.split('&').forEach((kv) => {
+        const i = kv.indexOf('=');
+        out[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1));
+      });
+      return out;
     },
     // escolhe a tarifa pelo dropdown do painel, como a pessoa faz
     escolher: function (rotulo) {
@@ -225,4 +272,4 @@ function montar(o) {
 
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
-module.exports = { montar, fixture, espera, PESSOAS, roomSelectorHtml, bookingHtml };
+module.exports = { montar, fixture, espera, PESSOAS, roomSelectorHtml, bookingHtml, JSDOM, JQUERY };

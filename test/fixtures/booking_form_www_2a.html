@@ -1,0 +1,225 @@
+<!-- booking.aspx real (www, Bourbon Atibaia, 2 adultos, 13/08/2026): bloco de passageiros.
+     Fonte: projects/azul-hoteis-monitor/spike/bk_booking_www_post.html. Sem dado pessoal (inputs vazios).
+     Tirados só os artefatos do select2 (o JS do site os cria; o HTML do POST 1 não os tem). -->
+<div class="booking-data">
+<div class="booking-data__section">
+<div class="booking-paxes js-booking-paxes" data-validation-show-default-message="true">
+    <div class="alert alert-danger collapse"></div>
+    <span class="js-label-required-fields">* Campos obrigatórios</span><br>
+    <br>
+    <div class="js-booking-paxes__is-quotation--container">
+        <input id="booking-paxes__is-quotation" type="checkbox" class="booking-paxes__is-quotation js-booking-paxes__is-quotation--checkbox" data-label-toggle-button="Confirme o orçamento" value="">
+        <label for="booking-paxes__is-quotation">Desejo realizar apenas um orçamento</label>
+    </div>
+    <div class="js-custom-message-When-Quotation" style="display: none;">
+    </div>
+     <p class="booking-paxes__points-msg">Número TudoAzul informativo. Os pontos TudoAzul referentes a esta viagem serão creditados na conta do pagante da reserva (informe o pagante na próxima tela).</p>
+    <div class="booking-paxes__remember-paxes">
+    </div>
+    <div class="booking-paxes__room js-booking-paxes-roomnumber" data-roomnumber="1">
+        <div class="booking-paxes__pax js-booking-paxes-pax-row" data-pax-row="1" data-pax-type="0" data-pax-age="30" data-pax-maxage="" data-pax-tripdate="28/08/2026" data-pax-adultagefrom="18">
+            <div class="booking-paxes__pax-type">
+                Adulto 1
+            </div>
+            <div class="booking-paxes__pax-fields js-booking-paxes-fields">
+                <div class="booking-paxes__pax-fields-row row">
+                    <div class="booking-paxes__pax-field--validation">
+                        <input type="hidden" class="booking-data__hidden-fields" name="comId" value="">
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                                <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="
+			IMPORTANTE.
+			&lt;br /&gt;
+			RG ou DNI - Documento de Identidade.
+			&lt;br /&gt;
+			NIE - Número de identificação de estrangeiro.
+			&lt;br /&gt;
+			PASSAPORTE.
+			&lt;br /&gt;">
+                                    <span class="glyphicon glyphicon-info"></span>
+                                </a>
+                                Tipo de Documento
+                                <span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                            </span>
+                            <select name="pax-idTDC" class="form-control js-enhanced-select js-pax-idTDC" required="required">
+                                <option value="2">Passaporte</option>
+                                <option value="3">RNE</option>
+                                <option value="4" selected="selected">CPF</option>
+                            </select>
+                        </label>
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                                <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, insira o número do documento de viagem, sem espaços ou digitos.">
+                                    <span class="glyphicon glyphicon-info"></span>
+                                </a>
+                                Número do documento<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                            </span>
+                            <input type="text" name="pax-document-number" data-validate="4" class="form-control validate" required="required" data-validation-msg-i18n="rqf:you must fill a correct document number" placeholder="000.000.000-00" value="" maxlength="50">
+                        </label>
+                        <label class="booking-paxes__pax-field--link-container">
+                            <a class="booking-paxes__pax-field-link js-booking-paxes--validate-document js-validate-doc" data-handler="/booking/handlers/getHolderInfo.ashx">Validar CPF</a>
+                        </label>
+                    </div>
+                    <div class="booking-paxes__pax-field--validation">
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">Tipo Prog. Pontos</span>
+                            <select name="pax-tipo-socio" class="form-control js-enhanced-select">
+                                <option value="Tudo Azul">Tudo Azul </option>
+                            </select>
+                        </label>
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">Nº do programa de pontos</span>
+                            <span class="sr-only">Identificação</span>
+                            <input type="text" name="pax-numero-socio" class="form-control" maxlength="10" data-validation-msg-i18n="rqf:required field" placeholder="0000000000" value="">
+                        </label>
+                        <label class="booking-paxes__pax-field--link-container">
+                            <a class="booking-paxes__pax-field-link js-booking-paxes--validate-document js-validate-tud" data-handler="/booking/handlers/getHolderInfo.ashx">Validar Tudo Azul</a>
+                        </label>
+                    </div>
+                </div>
+                <div class="booking-paxes__pax-fields-row booking-paxes__pax-fields-row--extra-fields row">
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">Título<span class="js-booking-paxes__pax-field-label--asterisk">*</span></span>
+                        <select name="pax-treatment" class="form-control js-enhanced-select" required="required">
+                            <option value="MR">Sr.</option>
+                            <option value="MRS">Sra.</option>
+                        </select>
+                    </label>
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                            <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, insira o seu nome completo como aparece no seu documento de viagem (identidade ou passaporte). Máximo 32 caracteres.">
+                                <span class="glyphicon glyphicon-info"></span>
+                            </a>
+                            Nome<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                        </span>
+                        <input type="text" name="pax-name" class="form-control" required="required" data-validate="name" data-validation-msg-i18n="rqf:you must fill a name" data-value-to-quotation="Pendente" placeholder="Nome..." value="" maxlength="32">
+                    </label>
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                            <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, insira o seu nome completo como aparece no seu documento de viagem (identidade ou passaporte). Máximo 32 caracteres.">
+                                <span class="glyphicon glyphicon-info"></span>
+                            </a>
+                            Sobrenome<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                        </span>
+                        <input type="text" name="pax-surname" class="form-control" data-value-to-quotation="Pendente" required="required" data-validate="name" data-validation-msg-i18n="rqf:you must fill a surname" placeholder="Sobrenomes..." value="" maxlength="32">
+                    </label>
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                            <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, digite a data no formato dd/mm/aaaa, onde dd é o dia, mm é o mês e aaaa é o ano.&lt;br /&gt;&lt;br /&gt;Lembre-se que o passageiro é um adulto, para que a data de nascimento deve coincidir com a idade de um adulto (18+ idade) quando a viagem começa.">
+                                <span class="glyphicon glyphicon-info"></span>
+                            </a>
+                            Data de nascimento<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                        </span>
+                        <input type="text" name="pax-birthday" class="form-control" required="required" data-validate="pax-birthday" data-validation-msg-i18n="rqf:you must fill a valid date" size="9" data-dateformat="dd/MM/yyyy" placeholder="dd/MM/yyyy" value="" onfocus="addDateMask(this);">
+                    </label>
+                </div>
+                <div class="clear"></div>
+            </div>
+        </div>
+        <!--/pax-->
+        <div class="booking-paxes__pax js-booking-paxes-pax-row" data-pax-row="2" data-pax-type="0" data-pax-age="30" data-pax-maxage="" data-pax-tripdate="28/08/2026" data-pax-adultagefrom="18">
+            <div class="booking-paxes__pax-type">
+                Adulto 2
+            </div>
+            <div class="booking-paxes__pax-fields js-booking-paxes-fields">
+                <div class="booking-paxes__pax-fields-row row">
+                    <div class="booking-paxes__pax-field--validation">
+                        <input type="hidden" class="booking-data__hidden-fields" name="comId" value="">
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                                <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="
+			IMPORTANTE.
+			&lt;br /&gt;
+			RG ou DNI - Documento de Identidade.
+			&lt;br /&gt;
+			NIE - Número de identificação de estrangeiro.
+			&lt;br /&gt;
+			PASSAPORTE.
+			&lt;br /&gt;">
+                                    <span class="glyphicon glyphicon-info"></span>
+                                </a>
+                                Tipo de Documento
+                                <span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                            </span>
+                            <select name="pax-idTDC" class="form-control js-enhanced-select js-pax-idTDC" required="required">
+                                <option value="2">Passaporte</option>
+                                <option value="3">RNE</option>
+                                <option value="4" selected="selected">CPF</option>
+                            </select>
+                        </label>
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                                <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, insira o número do documento de viagem, sem espaços ou digitos.">
+                                    <span class="glyphicon glyphicon-info"></span>
+                                </a>
+                                Número do documento<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                            </span>
+                            <input type="text" name="pax-document-number" data-validate="4" class="form-control validate" required="required" data-validation-msg-i18n="rqf:you must fill a correct document number" placeholder="000.000.000-00" value="" maxlength="50">
+                        </label>
+                        <label class="booking-paxes__pax-field--link-container">
+                            <a class="booking-paxes__pax-field-link js-booking-paxes--validate-document js-validate-doc" data-handler="/booking/handlers/getHolderInfo.ashx">Validar CPF</a>
+                        </label>
+                    </div>
+                    <div class="booking-paxes__pax-field--validation">
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">Tipo Prog. Pontos</span>
+                            <select name="pax-tipo-socio" class="form-control js-enhanced-select">
+                                <option value="Tudo Azul">Tudo Azul </option>
+                            </select>
+                        </label>
+                        <label class="booking-paxes__pax-field">
+                            <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">Nº do programa de pontos</span>
+                            <span class="sr-only">Identificação</span>
+                            <input type="text" name="pax-numero-socio" class="form-control" maxlength="10" data-validation-msg-i18n="rqf:required field" placeholder="0000000000" value="">
+                        </label>
+                        <label class="booking-paxes__pax-field--link-container">
+                            <a class="booking-paxes__pax-field-link js-booking-paxes--validate-document js-validate-tud" data-handler="/booking/handlers/getHolderInfo.ashx">Validar Tudo Azul</a>
+                        </label>
+                    </div>
+                </div>
+                <div class="booking-paxes__pax-fields-row booking-paxes__pax-fields-row--extra-fields row">
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">Título<span class="js-booking-paxes__pax-field-label--asterisk">*</span></span>
+                        <select name="pax-treatment" class="form-control js-enhanced-select" required="required">
+                            <option value="MR">Sr.</option>
+                            <option value="MRS">Sra.</option>
+                        </select>
+                    </label>
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                            <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, insira o seu nome completo como aparece no seu documento de viagem (identidade ou passaporte). Máximo 32 caracteres.">
+                                <span class="glyphicon glyphicon-info"></span>
+                            </a>
+                            Nome<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                        </span>
+                        <input type="text" name="pax-name" class="form-control" required="required" data-validate="name" data-validation-msg-i18n="rqf:you must fill a name" data-value-to-quotation="Pendente" placeholder="Nome..." value="" maxlength="32">
+                    </label>
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                            <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, insira o seu nome completo como aparece no seu documento de viagem (identidade ou passaporte). Máximo 32 caracteres.">
+                                <span class="glyphicon glyphicon-info"></span>
+                            </a>
+                            Sobrenome<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                        </span>
+                        <input type="text" name="pax-surname" class="form-control" data-value-to-quotation="Pendente" required="required" data-validate="name" data-validation-msg-i18n="rqf:you must fill a surname" placeholder="Sobrenomes..." value="" maxlength="32">
+                    </label>
+                    <label class="booking-paxes__pax-field">
+                        <span class="booking-paxes__pax-field-label js-booking-paxes__pax-field-label">
+                            <a href="javascript:void(0)" class="booking-paxes__pax-field-tip" data-toggle="tooltip" data-trigger="focus" data-html="true" data-placement="top" tabindex="-1" title="IMPORTANTE. Por favor, digite a data no formato dd/mm/aaaa, onde dd é o dia, mm é o mês e aaaa é o ano.&lt;br /&gt;&lt;br /&gt;Lembre-se que o passageiro é um adulto, para que a data de nascimento deve coincidir com a idade de um adulto (18+ idade) quando a viagem começa.">
+                                <span class="glyphicon glyphicon-info"></span>
+                            </a>
+                            Data de nascimento<span class="js-booking-paxes__pax-field-label--asterisk">*</span>
+                        </span>
+                        <input type="text" name="pax-birthday" class="form-control" required="required" data-validate="pax-birthday" data-validation-msg-i18n="rqf:you must fill a valid date" size="9" data-dateformat="dd/MM/yyyy" placeholder="dd/MM/yyyy" value="" onfocus="addDateMask(this);">
+                    </label>
+                </div>
+                <div class="clear"></div>
+            </div>
+        </div>
+        <!--/pax-->
+    </div>
+    <!--/room-->
+</div>
+</div>
+<div class="booking-data__section booking-data__remarks js-booking-data-notes"><textarea class="booking-data__notes-textarea" rows="5" name="notes"></textarea></div>
+</div>
