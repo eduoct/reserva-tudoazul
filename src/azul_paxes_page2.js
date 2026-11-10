@@ -35,7 +35,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.6.2';
+  var VERSION = '1.6.3';
   var KOFI = 'https://ko-fi.com/eduoct';
 
   // Só monta a UI no site certo. Fora daqui, sai sem tocar na página.
@@ -1117,6 +1117,20 @@
   // ------------------------------------------------- bookingPaxes (payload)
   // Mesma forma do payload que passou no teste de 13/08 (v3): só os campos que
   // o motor usa, idade real na data do check-in e nome em maiúsculas.
+  // comId = "este CPF é cliente Azul cadastrado". O formulário do site só preenche
+  // o campo depois que a consulta do CPF confirma o cadastro. Mandar o CPF de quem
+  // não tem cadastro (criança pequena, digitada à mão) derruba o POST 2 com HTTP 500
+  // (Edu 10/11/2026: 2 adultos ok + criança de 7 ok + criança de 2 "pendente").
+  // Regra: consulta ok → manda; consulta disse "sem cadastro" → não manda;
+  // sem consulta: adulto continua como era (titular dos pontos), criança não vai.
+  function comIdDe(p) {
+    var d = digits(p.doc);
+    if (!d) return '';
+    if (p.status === 'ok' || p.comId) return d;
+    if (p.status === 'manual') return '';
+    return parseInt(p.type, 10) === 0 ? d : '';
+  }
+
   function paxFromModel(p) {
     var doc = p.docKind === 'cpf' ? maskCPF(p.doc) : (p.cpfFromFFP || p.doc);
 
@@ -1149,7 +1163,7 @@
       baggage: '',
       tipoSocio: p.ffp ? 'Tudo Azul' : '',
       numeroSocio: p.ffp || '',
-      comId: digits(p.doc),
+      comId: comIdDe(p),
       numberOfBags: 0,
       baggageSelection: ''
     };
@@ -1183,7 +1197,7 @@
       UID: state.refs.UID
     };
 
-    var comIds = state.paxes.map(function (p) { return digits(p.doc); })
+    var comIds = state.paxes.map(comIdDe)
                             .filter(Boolean).join(',');
     if (comIds) params.comId = comIds;
 

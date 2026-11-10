@@ -105,6 +105,44 @@ teste('fontes divergem (barra 7,4 x seletor 2,7): idade em branco e o envio é b
   igual(t.bookingPaxes()[0].paxes.map((p) => p.paxAge), [30, 30, 7, 4]);
 });
 
+// ------------------------------------------------- comId (v1.6.3, 10/11/2026)
+const comIdParam = (t) => {
+  const m = /(?:^|&)comId=([^&]*)/.exec(t.post2()[0].body);
+  return m ? decodeURIComponent(m[1]) : '';
+};
+
+teste('comId: criança digitada à mão, sem consulta, não vai no comId (caso real 10/11, HTTP 500)', async () => {
+  const t = montar({ barras: [BARRA_WWW], post1Idades: [7, 4] });   // sem padrão salvo, como no navegador do Edu
+  await espera(0);
+  t.escolher();
+  const cpfs = ['00000000001', '00000000002', '00000000003', '00000000004'];
+  cpfs.forEach((cpf, i) => {
+    const p = PESSOAS[cpf];
+    t.digitar(i, 'doc', cpf);
+    t.digitar(i, 'name', p.Name);
+    t.digitar(i, 'surname', p.LastName);
+    t.digitar(i, 'birthday', p.BirthDate);
+  });
+  await t.api.reservar();
+  assert.strictEqual(t.post2().length, 1, t.log());
+  assert.strictEqual(comIdParam(t), '00000000001,00000000002');
+  const bp = t.bookingPaxes()[0].paxes;
+  igual(bp.map((p) => p.comId), ['00000000001', '00000000002', '', '']);
+  // o documento da criança continua indo no documentNumber
+  assert.ok(bp.filter((p) => p.paxType !== 0).every((p) => p.documentNumber), JSON.stringify(bp));
+});
+
+teste('comId: quem a consulta confirmou vai, inclusive criança', async () => {
+  const t = montar({ barras: [BARRA_WWW], preset: PRESET, post1Idades: [7, 4] });
+  await espera(0);
+  t.escolher();
+  t.clicar('lookup-all');
+  await espera(1500);
+  await t.api.reservar();
+  assert.strictEqual(t.post2().length, 1, t.log());
+  igual(comIdParam(t).split(',').sort(), ['00000000001', '00000000002', '00000000003', '00000000004']);
+});
+
 // -------------------------------------------------------------- envio ok
 teste('caminho feliz: POST 2 com 30,30,7,4 e cada criança com o próprio nascimento', async () => {
   const t = montar({ barras: [BARRA_WWW], preset: PRESET, post1Idades: [7, 4] });
