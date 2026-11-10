@@ -1,0 +1,79 @@
+{
+ "_origem": "www_availability_taua.json + www_results.json (busca publica 09/11/2026, ssid 705907), optionID trocado por OPT-n",
+ "uid": "GHU@JP192675",
+ "item": {
+  "hotel": {
+   "name": "Tauá Hotel Atibaia",
+   "GUID": "HOT:GHU@JP192675"
+  },
+  "availability": {
+   "startDate": "2026-12-18T00:00:00",
+   "endDate": "2026-12-20T00:00:00",
+   "distribution": {
+    "rooms": 1,
+    "adults": 2,
+    "children": 2,
+    "babies": 0
+   },
+   "moreOptions": false,
+   "options": [
+    {
+     "ID": "OPT-1",
+     "roomList": [
+      {
+       "name": "Superior",
+       "adults": 2,
+       "children": 2
+      }
+     ],
+     "boardTypeName": "Full Board",
+     "price": 5910.41,
+     "currency": "BRL",
+     "nonRefundable": false
+    },
+    {
+     "ID": "OPT-2",
+     "roomList": [
+      {
+       "name": "Superior Vista Piscina",
+       "adults": 2,
+       "children": 2
+      }
+     ],
+     "boardTypeName": "Full Board",
+     "price": 6457.44,
+     "currency": "BRL",
+     "nonRefundable": false
+    },
+    {
+     "ID": "OPT-3",
+     "roomList": [
+      {
+       "name": "Vista Piscina Elite Varanda",
+       "adults": 2,
+       "children": 2
+      }
+     ],
+     "boardTypeName": "Full Board",
+     "price": 9316.23,
+     "currency": "BRL",
+     "nonRefundable": false
+    },
+    {
+     "ID": "OPT-4",
+     "roomList": [
+      {
+       "name": "Suíte Elite Plus",
+       "adults": 2,
+       "children": 2
+      }
+     ],
+     "boardTypeName": "Full Board",
+     "price": 12353.18,
+     "currency": "BRL",
+     "nonRefundable": false
+    }
+   ]
+  }
+ }
+}

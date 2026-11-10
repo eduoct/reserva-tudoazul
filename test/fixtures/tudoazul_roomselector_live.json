@@ -1,0 +1,46 @@
+{
+ "step1": {
+  "before": "paxs=20",
+  "rooms": 1,
+  "childSel": 1
+ },
+ "step2": {
+  "ageEls": 9,
+  "params": "paxs=22&ages=0704",
+  "val": [
+   {
+    "adults": [
+     {
+      "age": null
+     },
+     {
+      "age": null
+     }
+    ],
+    "children": [
+     {
+      "age": 7
+     },
+     {
+      "age": 4
+     }
+    ],
+    "babies": []
+   }
+  ],
+  "ageVals": [
+   "7",
+   "4",
+   "5",
+   "5",
+   "5",
+   "5",
+   "5",
+   "5",
+   "5"
+  ],
+  "childVal": "2",
+  "summary": "1 Apartamentos\n                \n                \n                    \n\n4 Hóspedes",
+  "button": "1 Apartamentos\n                \n                \n                    \n\n4 Hóspedes"
+ }
+}
